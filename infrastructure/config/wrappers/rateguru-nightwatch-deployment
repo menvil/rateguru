@@ -19,7 +19,7 @@
 #
 # Installed by install-nightwatch-agent, not install-target-perimeter: the
 # whole Nightwatch integration stays in one reversible place while it is still
-# a Phase 6B/6C evaluation, and no host is required to carry this wrapper.
+# the Nightwatch evaluation/6C evaluation, and no host is required to carry this wrapper.
 
 set -Eeuo pipefail
 

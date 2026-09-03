@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.5: infrastructure/scripts/bootstrap-host — the one
+ * : infrastructure/scripts/bootstrap-host — the one
  * authoritative host-bootstrap entry point that composes the existing
  * slices (5.2 install-bootstrap-runtime, 5.3 install-bootstrap-host-layout,
  * 5.4 install-bootstrap-services) plus the final bootstrap-host-preflight.
@@ -318,10 +318,10 @@ it('--check on a clean host reports 5.2 NEEDS_APPLY with 5.3/5.4/preflight BLOCK
         expect($output)->toContain('PHASE 5.2 runtime/packages');
         expect($output)->toContain('NEEDS_APPLY');
         expect($output)->toContain('PHASE 5.3 users/groups/filesystem');
-        expect($output)->toContain('BLOCKED until Phase 5.2 is satisfied');
+        expect($output)->toContain('BLOCKED until the runtime bootstrap is satisfied');
         expect($output)->toContain('PHASE 5.4 services/configuration');
-        expect($output)->toContain('BLOCKED until Phase 5.3 is satisfied');
-        expect($output)->toContain("FINAL PREFLIGHT\n  BLOCKED until Phase 5.4 is satisfied");
+        expect($output)->toContain('BLOCKED until the host-layout bootstrap is satisfied');
+        expect($output)->toContain("FINAL PREFLIGHT\n  BLOCKED until the service bootstrap is satisfied");
         expect($output)->toContain("5.2 NEEDS_APPLY\n5.3 BLOCKED\n5.4 BLOCKED");
         expect($output)->toContain('BOOTSTRAP READY: NO');
 
@@ -522,7 +522,7 @@ it('skips already-satisfied slices and applies only the unsatisfied ones', funct
     }
 });
 
-it('fails fast at slice 5.4, keeps 5.2/5.3 converged without rollback, and resumes at 5.4 on the next apply', function () {
+it('fails fast at install-bootstrap-services, keeps 5.2/5.3 converged without rollback, and resumes at 5.4 on the next apply', function () {
     $scratch = bhostScratchDir();
 
     try {
@@ -535,8 +535,8 @@ it('fails fast at slice 5.4, keeps 5.2/5.3 converged without rollback, and resum
 
         expect($exit)->toBe(1);
         expect($output)->toContain('EXTERNAL PREREQUISITE MISSING');
-        expect($output)->toContain('slice 5.4 apply failed');
-        expect($output)->toContain('re-run bootstrap-host --apply to resume at slice 5.4');
+        expect($output)->toContain('install-bootstrap-services apply failed');
+        expect($output)->toContain('re-run bootstrap-host --apply to resume at install-bootstrap-services');
 
         // 5.2/5.3 converged and stay converged: no destructive rollback.
         expect(file_exists($scratch.'/toggles/runtime-installer-compliant'))->toBeTrue();
@@ -579,7 +579,7 @@ it('stops at the first child failure: later slices and the preflight are never i
         [$exit, $output] = bhostRun(['--apply'], $env);
 
         expect($exit)->toBe(1);
-        expect($output)->toContain('slice 5.2 apply failed');
+        expect($output)->toContain('install-bootstrap-runtime apply failed');
 
         $children = implode("\n", bhostChildrenLog($scratch));
         expect($children)->not->toContain('hostlayout-installer');
@@ -599,7 +599,7 @@ it('stops at the first child failure: later slices and the preflight are never i
         [$exit, $output] = bhostRun(['--apply'], $env);
 
         expect($exit)->toBe(1);
-        expect($output)->toContain('slice 5.2 post-apply verification failed');
+        expect($output)->toContain('install-bootstrap-runtime post-apply verification failed');
         expect(implode("\n", bhostChildrenLog($scratch)))->not->toContain('hostlayout-installer');
     } finally {
         bhostCleanup($scratch);
@@ -615,7 +615,7 @@ it('stops at the first child failure: later slices and the preflight are never i
         [$exit, $output] = bhostRun(['--apply'], $env);
 
         expect($exit)->toBe(1);
-        expect($output)->toContain('slice 5.3 apply failed');
+        expect($output)->toContain('install-bootstrap-host-layout apply failed');
 
         $children = implode("\n", bhostChildrenLog($scratch));
         expect($children)->not->toContain('services-installer');
@@ -962,7 +962,7 @@ it('documents the canonical operator flow in the runbook and README', function (
         ->toContain('infrastructure/scripts/bootstrap-host');
 });
 
-it('records every Phase 5 slice completed after its own real acceptance', function () {
+it('records every bootstrap slice completed after its own real acceptance', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)->toContain('5.4 Services and configuration — completed');
@@ -978,17 +978,17 @@ it('records every Phase 5 slice completed after its own real acceptance', functi
     // No stale "awaiting acceptance" wording survives anywhere.
     expect($roadmap)->not->toContain('5.5 Bootstrap orchestrator — implemented');
 
-    // Phase 5 closed and handed over; there is still exactly one current phase.
+    // the clean-host bootstrap closed and handed over; there is still exactly one current phase.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)
         ->toMatch('/^\|\s*5\s*\|\s*Infrastructure installer and clean-VPS bootstrap\s*\|\s*✅ completed\s*\|$/m')
         ->toContain('## 5. Infrastructure installer and clean-VPS bootstrap — completed');
 });
 
-it('keeps the Phase 5 and Phase 7 rehearsal gates distinct', function () {
+it('keeps the clean-host bootstrap and the disaster-recovery work rehearsal gates distinct', function () {
     // The offsite restore-test that passed in 5.6 proves a backup is
     // restorable. It does not prove the application can be reconstructed
-    // after server/data loss, and must never be read as closing Phase 7.
+    // after server/data loss, and must never be read as closing the disaster-recovery work.
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)

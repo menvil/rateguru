@@ -21,7 +21,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 4: pinned-releases is non-secret, per-target operational data
+# Pinned-releases is non-secret, per-target operational data
 # that only this script ever writes, and only while holding the exclusive
 # deployment lock. No script in this repository has ever chown'd it (nor
 # deployments/history.jsonl, nor the deployment lock file) — all three have
@@ -39,7 +39,7 @@ PINNED_FILE_OWNER="root"
 PINNED_FILE_GROUP="root"
 PINNED_FILE_MODE="0640"
 
-# Phase 7.4: where the restore guard lives — the same run root backup,
+# Where the restore guard lives — the same run root backup,
 # backup-cycle and the restore primitives already resolve. Cleanup reads it and
 # nothing else under it.
 RUN_ROOT_DEFAULT="/home/www/rateguru/run"

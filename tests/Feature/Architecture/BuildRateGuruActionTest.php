@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The one canonical RateGuru build implementation (Phase 7.1, Part A).
+ * The one canonical RateGuru build implementation (the shared operation actions, Part A).
  *
  * Everything mechanical about producing an immutable release — toolchain,
  * production dependencies, frontend assets, the package tree and its
@@ -146,7 +146,7 @@ it('is the only build implementation, used by both deployment pipelines', functi
     expect($callSites)->toEqualCanonicalizing([
         'deploy-staging.yml:build',
         'release.yml:build',
-        // Phase 7.4: the historical build a controlled code alignment needs.
+        // the controlled code alignment: the historical build a controlled code alignment needs.
         // Same action, same mechanics — the only thing that differs is that
         // the commit comes from a backup rather than from an operator.
         'restore-staging.yml:build',

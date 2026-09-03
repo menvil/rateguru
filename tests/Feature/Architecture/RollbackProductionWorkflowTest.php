@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The production rollback workflow (Phase 7.1, Part E). Structurally the
+ * The production rollback workflow (the shared operation actions, Part E). Structurally the
  * staging one with a different fixed identity: same operator semantics, same
  * shared implementation, a different target, environment and concurrency
  * domain — and none of them selectable at dispatch time.

@@ -18,7 +18,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 7.2: gated test overrides, following the exact
+# Gated test overrides, following the exact
 # FOO_BIN_DEFAULT/FOO_BIN + rateguru_test_overrides_allowed shape backup/
 # restore-test already establish. Production values are unchanged — rclone
 # was previously invoked as a bare `rclone` (PATH-resolved); it now defaults

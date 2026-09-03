@@ -21,7 +21,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 6: gated test override for the one external binary rollback
+# Gated test override for the one external binary rollback
 # invokes by absolute path, mirroring deploy's own RATEGURU_HEALTH_CHECK_BIN/
 # HEALTH_CHECK_BIN pattern exactly. Production value is unchanged; this exists
 # purely so tests can run rollback's real pipeline end to end against a
@@ -32,7 +32,7 @@ source "${COMMON_FILE}"
 HEALTH_CHECK_BIN_DEFAULT="/home/www/rateguru/bin/health-check"
 HEALTH_CHECK_BIN="${HEALTH_CHECK_BIN_DEFAULT}"
 
-# Phase 7.4: where the restore guard lives — the same run root backup,
+# Where the restore guard lives — the same run root backup,
 # backup-cycle and the restore primitives already resolve. Rollback reads it
 # and nothing else under it.
 RUN_ROOT_DEFAULT="/home/www/rateguru/run"

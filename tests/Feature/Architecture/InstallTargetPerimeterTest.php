@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 8: infrastructure/scripts/install-target-perimeter — the
+ * the target-aware migration: infrastructure/scripts/install-target-perimeter — the
  * transactional installer for the three generic wrappers, the sudoers rule,
  * and the backup cron entry.
  *
@@ -829,7 +829,7 @@ it('check fails when an installed operation has the wrong mode', function () {
 
 it('check fails when the installed backup-cycle predates --target support, the exact reported symptom', function () {
     // Reproduces the real incident this guard exists for: an installed
-    // backup-cycle from before Phase 4 slice 7.3 answers "Unknown argument:
+    // backup-cycle from before answers "Unknown argument:
     // --target" even though the committed source is already target-aware.
     // The installer's own check is purely static (content/mode/ownership),
     // so this proves two things together: (1) that stale content is

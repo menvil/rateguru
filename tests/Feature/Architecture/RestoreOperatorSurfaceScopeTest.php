@@ -3,102 +3,8 @@
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
-/**
- * Phase 7.4's own scope guard: what this phase establishes, and — more
- * importantly — everything it deliberately does not begin.
- *
- * 7.4 ends when an operator can restore a target from GitHub, and a backup
- * taken under older code is followed automatically by a build of THAT commit,
- * a controlled deployment that keeps the target held, and a resume. Repair
- * Target is 7.5, Recover Host is 7.6/7.7, the rejected durable artifact
- * archive stays rejected, nothing is ever built on the VPS, and production
- * stays unprovisioned until Phase 8.
- *
- * @return list<string>
- */
-function p74OperationalFiles(): array
-{
-    $configFiles = [];
-
-    $tree = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator(base_path('infrastructure/config'), FilesystemIterator::SKIP_DOTS),
-    );
-
-    foreach ($tree as $entry) {
-        if ($entry->isFile()) {
-            $configFiles[] = $entry->getPathname();
-        }
-    }
-
-    return array_values(array_filter(array_merge(
-        glob(base_path('.github/workflows/*.yml')) ?: [],
-        glob(base_path('.github/actions/*/action.yml')) ?: [],
-        glob(base_path('infrastructure/scripts/*')) ?: [],
-        $configFiles,
-    ), 'is_file'));
-}
-
-/**
- * The revision this branch is measured against: the pull request's own base
- * commit in CI, `origin/develop` locally, or null when neither is available.
- */
-function p74BaseRevision(): ?string
-{
-    $baseSha = getenv('BASE_SHA');
-
-    if (is_string($baseSha) && $baseSha !== '' && p74GitSucceeds(['cat-file', '-e', $baseSha.'^{commit}'])) {
-        return $baseSha;
-    }
-
-    return p74GitSucceeds(['rev-parse', '--verify', 'origin/develop']) ? 'origin/develop' : null;
-}
-
-/**
- * @param  list<string>  $arguments
- */
-function p74GitSucceeds(array $arguments): bool
-{
-    // Every argument is escaped individually: BASE_SHA is an environment
-    // value and this runs through a shell.
-    $command = 'cd '.escapeshellarg(base_path()).' && git '
-        .implode(' ', array_map('escapeshellarg', $arguments))
-        .' >/dev/null 2>&1; echo $?';
-
-    return trim((string) shell_exec($command)) === '0';
-}
-
-/** @return list<string> */
-function p74ChangedFiles(): array
-{
-    $baseline = trim((string) shell_exec(
-        'cd '.escapeshellarg(base_path()).' && git diff --name-only '
-            .escapeshellarg((string) p74BaseRevision()).' HEAD 2>/dev/null'
-    ));
-
-    return $baseline === '' ? [] : explode("\n", $baseline);
-}
-
-/**
- * The body of one shell function, so an ordering assertion is about what
- * actually runs rather than about where things happen to be declared. Every one
- * of these scripts defines its helpers above its pipeline, so a whole-file
- * position comparison would routinely say the opposite of the truth.
- */
-function p74FunctionBody(string $source, string $name): string
-{
-    $start = mb_strpos($source, "\n{$name}() {\n");
-
-    expect($start)->not->toBeFalse("{$name} is not defined");
-
-    $end = mb_strpos($source, "\n}\n", $start);
-
-    expect($end)->not->toBeFalse("{$name} has no closing brace");
-
-    return mb_substr($source, $start, $end - $start);
-}
-
 // =============================================================================
-// What Phase 7.4 adds
+// What the controlled code alignment adds
 // =============================================================================
 
 it('adds exactly one restore action, two operator workflows and one server wrapper', function () {
@@ -274,7 +180,7 @@ it('never builds an application on the VPS and stores no durable artifact archiv
     }
 
     // The rejected durable artifact archive stays rejected everywhere.
-    foreach (p74OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         $source = File::get($path);
 
         foreach ([
@@ -345,17 +251,17 @@ it('makes every ordinary target mutation refuse while a restore guard exists', f
 
     // And each one does it BEFORE its own first mutation, measured inside the
     // pipeline function that actually runs them.
-    $deploy = p74FunctionBody(File::get(base_path('infrastructure/scripts/deploy')), 'perform_deploy');
+    $deploy = shellFunctionBody(File::get(base_path('infrastructure/scripts/deploy')), 'perform_deploy');
 
     expect(mb_strpos($deploy, 'assert_no_restore_hold'))
         ->toBeLessThan(mb_strpos($deploy, 'append_history \\'));
 
-    $rollback = p74FunctionBody(File::get(base_path('infrastructure/scripts/rollback')), 'perform_rollback');
+    $rollback = shellFunctionBody(File::get(base_path('infrastructure/scripts/rollback')), 'perform_rollback');
 
     expect(mb_strpos($rollback, 'assert_no_restore_hold'))
         ->toBeLessThan(mb_strpos($rollback, 'validate_releases_root'));
 
-    $cleanup = p74FunctionBody(File::get(base_path('infrastructure/scripts/cleanup')), 'perform_apply');
+    $cleanup = shellFunctionBody(File::get(base_path('infrastructure/scripts/cleanup')), 'perform_apply');
 
     expect(mb_strpos($cleanup, 'assert_no_restore_hold'))
         ->toBeLessThan(mb_strpos($cleanup, 'ensure_pinned_file_exists'));
@@ -369,7 +275,7 @@ it('makes every ordinary target mutation refuse while a restore guard exists', f
 
     // Only restore-target may write or clear a guard. Nothing else in the
     // repository touches it.
-    foreach (p74OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         if (basename($path) === 'restore-target' || basename($path) === 'common') {
             continue;
         }
@@ -399,11 +305,11 @@ it('never migrates, health-checks or resumes a target during a controlled alignm
 
     // finalize_restore_alignment does none of the resuming actions.
     //
-    // Through p74FunctionBody, which asserts both markers were actually found.
+    // Through shellFunctionBody, which asserts both markers were actually found.
     // Raw mb_strpos here would turn a renamed function into `false`, which
     // mb_substr reads as offset 0 — and the scan below would then "pass" while
     // describing the whole file instead of that one function.
-    $section = p74FunctionBody($deploy, 'finalize_restore_alignment');
+    $section = shellFunctionBody($deploy, 'finalize_restore_alignment');
 
     foreach ([
         'HEALTH_CHECK_BIN',
@@ -444,7 +350,7 @@ it('activates no production target, provisions nothing and changes no DNS', func
 
     expect($registry['targets']['tits-guru']['lifecycle'])->toBe('planned');
 
-    foreach (p74OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         $source = File::get($path);
 
         foreach (['cloudflare', 'route53', 'dns_record', 'certbot --force-renewal'] as $forbidden) {
@@ -458,7 +364,7 @@ it('activates no production target, provisions nothing and changes no DNS', func
 // =============================================================================
 
 it('leaves the accepted backup subsystem and the 7.3 restore primitives untouched', function () {
-    $changed = p74ChangedFiles();
+    $changed = branchChangedFiles();
 
     // The restore mechanics themselves were accepted on a real destructive
     // staging run. 7.4 adds --inspect and a machine-readable result line to
@@ -482,7 +388,7 @@ it('leaves the accepted backup subsystem and the 7.3 restore primitives untouche
     ] as $untouched) {
         expect($changed)->not->toContain($untouched);
     }
-})->skip(fn (): bool => p74BaseRevision() === null,
+})->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
 it('does not weaken the ordinary deploy, rollback or cleanup contract', function () {

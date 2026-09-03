@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-bootstrap-runtime — Phase 5 slice 5.2: reproducible base/runtime
+# Install-bootstrap-runtime — : reproducible base/runtime
 # package installation for a clean Ubuntu 22.04 RateGuru host.
 #
 # Modes:
@@ -9,14 +9,14 @@
 #             runtime state, plus the intended --apply action for every
 #             unsatisfied item. Never runs apt-get update, never installs
 #             anything, never adds repositories or keys. Exits 0 only when
-#             the slice 5.2 contract is already satisfied.
+#             The install-bootstrap-runtime contract is already satisfied.
 #   --apply   Root only. Idempotently configures the two RateGuru-owned
 #             package repositories (PHP PPA, PGDG), installs missing
 #             required packages, and ends with the full --verify report.
 #             Never removes packages, never runs apt upgrade/dist-upgrade/
 #             full-upgrade, never touches application users, directories,
 #             services or RateGuru configuration.
-#   --verify  Read-only. The authoritative slice 5.2 contract gate: exits 0
+#   --verify  Read-only. The authoritative install-bootstrap-runtime contract gate: exits 0
 #             only when every repository, package, binary, PHP module and
 #             client version requirement holds. --check is exactly this
 #             report with intended actions added.
@@ -106,7 +106,7 @@
 #     staging/production runtime contract is PostgreSQL only.
 #   - openssh-server is required: the committed deploy pipeline delivers
 #     release artifacts over SSH (deploy-staging.yml), so sshd is a genuine
-#     runtime prerequisite even though slice 5.2 never touches its
+#     Runtime prerequisite even though install-bootstrap-runtime never touches its
 #     configuration.
 #   - shellcheck/actionlint/wget/journalctl are not requirements: the first
 #     two are development-only validators, wget is unused by the committed
@@ -217,7 +217,7 @@ RCLONE_SIGNING_KEY_FILE_DEFAULT="${REPO_ROOT}/infrastructure/config/external-run
 
 # --- Required package contract ----------------------------------------------
 
-# The smallest Ubuntu 22.04 package set supplying the Phase 5.1 canonical
+# The smallest Ubuntu 22.04 package set supplying the clean-host bootstrap.1 canonical
 # tool inventory (REQUIRED_BASE_TOOLS + RUNTIME_SERVICE_TOOLS in
 # bootstrap-host-preflight) plus the runtime services and certbot tooling.
 # rclone is deliberately NOT here: it is a managed external runtime binary
@@ -454,7 +454,7 @@ Usage:
   install-bootstrap-runtime --verify
   install-bootstrap-runtime --help
 
-  --check   Read-only slice 5.2 contract validation plus the intended
+  --check   Read-only install-bootstrap-runtime contract validation plus the intended
             --apply action for every unsatisfied item. Never runs apt-get,
             never installs anything. Exits 0 only when the contract is
             already satisfied.
@@ -463,12 +463,12 @@ Usage:
             ends with the full --verify report. Never upgrades, never
             removes, never touches users/directories/services/RateGuru
             configuration.
-  --verify  Read-only slice 5.2 contract gate: exit 0 only when every
+  --verify  Read-only install-bootstrap-runtime contract gate: exit 0 only when every
             repository, package, binary, PHP module and client-version
             requirement holds.
 
 Repository/package scope only: users, groups, filesystem, databases,
-service configuration and TLS belong to later Phase 5 slices.
+service configuration and TLS belong to later bootstrap installers.
 USAGE
 }
 
@@ -603,7 +603,7 @@ sources_file_content() {
 
     cat <<CONTENT
 # RateGuru ${label} repository — managed by install-bootstrap-runtime
-# (Phase 5 slice 5.2). Do not edit: re-run --apply to reconcile.
+#. Do not edit: re-run --apply to reconcile.
 Types: deb
 URIs: ${uri}
 Suites: ${suite}
@@ -979,7 +979,7 @@ contract_satisfied() {
 
 # run_contract_report — the full read-only report used by --check and
 # --verify (and by --apply as its closing gate). Exits 0 only when the
-# slice 5.2 contract is satisfied.
+# runtime contract is satisfied.
 run_contract_report() {
     printf 'RateGuru bootstrap runtime installer (%s mode)\n' "${MODE}"
     printf 'Supported baseline: %s %s (%s), architectures: %s\n' \

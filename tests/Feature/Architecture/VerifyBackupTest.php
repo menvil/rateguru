@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3: `verify-backup` — the gate every destructive restore passes
+ * Restore Target Data: `verify-backup` — the gate every destructive restore passes
  * before anything live is touched.
  *
  * Executes the real shipped infrastructure/scripts/verify-backup against real
@@ -42,11 +42,11 @@ function verifyBackupStage(string $scratch, string $backupDir, string $operation
  */
 function verifyBackupRun(string $scratch, array $arguments, array $envOverrides = [], array $registryOptions = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch, $registryOptions);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch, $registryOptions);
 
-    $env = p73BaseEnv($scratch, $registryPath, $targetsPath, $envOverrides);
+    $env = infraScriptEnv($scratch, $registryPath, $targetsPath, $envOverrides);
 
-    [$exit, $output] = p73Run(p73PatchedScript($scratch, 'verify-backup'), $arguments, $env);
+    [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'verify-backup'), $arguments, $env);
 
     return ['exit' => $exit, 'output' => $output, 'workspace' => $scratch.'/run/restores/parity-target'];
 }
@@ -54,7 +54,7 @@ function verifyBackupRun(string $scratch, array $arguments, array $envOverrides 
 /** Rewrites a staged backup's storage archive and repairs its checksum line. */
 function verifyBackupReplaceArchive(string $stagedDir, array $entries): void
 {
-    p73Archive($stagedDir.'/storage-app.tar.gz', $entries);
+    buildArchiveFixture($stagedDir.'/storage-app.tar.gz', $entries);
 
     $lines = [];
     foreach (preg_split('/\R/', trim(File::get($stagedDir.'/SHA256SUMS'))) as $line) {
@@ -74,10 +74,10 @@ function verifyBackupReplaceArchive(string $stagedDir, array $entries): void
 // =============================================================================
 
 it('verifies a complete, well-formed backup', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
 
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', $operation]);
@@ -90,7 +90,7 @@ it('verifies a complete, well-formed backup', function () {
             ->toContain('manifest identity: OK')
             ->toContain('storage archive: OK');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -99,10 +99,10 @@ it('verifies a complete, well-formed backup', function () {
 // =============================================================================
 
 it('fails when a backup file was modified after its checksum was taken', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', ['corrupt_after_checksum' => true]);
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', ['corrupt_after_checksum' => true]);
         $operation = verifyBackupStage($scratch, $backup);
 
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', $operation]);
@@ -110,15 +110,15 @@ it('fails when a backup file was modified after its checksum was taken', functio
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('failed SHA-256 verification');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects a SHA256SUMS naming a file outside the backup, before a single checksum is followed', function (string $entry) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'extra_sha_lines' => [str_repeat('a', 64).'  '.$entry],
         ]);
         $operation = verifyBackupStage($scratch, $backup);
@@ -130,7 +130,7 @@ it('rejects a SHA256SUMS naming a file outside the backup, before a single check
             ->toContain('SHA256SUMS references a file that is not part of a RateGuru backup')
             ->not->toContain('checksums: OK');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'absolute path' => '/etc/shadow',
@@ -141,10 +141,10 @@ it('rejects a SHA256SUMS naming a file outside the backup, before a single check
 ]);
 
 it('rejects a SHA256SUMS that lists the same file twice or omits one', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
         $staged = $scratch.'/run/restores/parity-target/'.$operation.'/selected-backup';
 
@@ -155,13 +155,13 @@ it('rejects a SHA256SUMS that lists the same file twice or omits one', function 
         expect($duplicate['exit'])->not->toBe(0);
         expect($duplicate['output'])->toContain('references database.dump more than once');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
         $staged = $scratch.'/run/restores/parity-target/'.$operation.'/selected-backup';
 
@@ -175,15 +175,15 @@ it('rejects a SHA256SUMS that lists the same file twice or omits one', function 
         expect($missing['exit'])->not->toBe(0);
         expect($missing['output'])->toContain('SHA256SUMS does not cover environment.env');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects a malformed SHA256SUMS line', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'extra_sha_lines' => ['not-a-checksum-line'],
         ]);
         $operation = verifyBackupStage($scratch, $backup);
@@ -193,7 +193,7 @@ it('rejects a malformed SHA256SUMS line', function () {
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('SHA256SUMS carries a malformed entry');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -202,11 +202,11 @@ it('rejects a malformed SHA256SUMS line', function () {
 // =============================================================================
 
 it('fails on a manifest that belongs to another target, environment, database or namespace', function (array $manifestOverrides, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
-            'manifest' => p73Manifest($manifestOverrides),
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
+            'manifest' => backupManifestFixture($manifestOverrides),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -215,7 +215,7 @@ it('fails on a manifest that belongs to another target, environment, database or
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain($expected);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'wrong project' => [['project' => 'other-project'], 'backup manifest project mismatch'],
@@ -227,11 +227,11 @@ it('fails on a manifest that belongs to another target, environment, database or
 ]);
 
 it('rejects an unsupported manifest schema version exactly as the existing backup contract does', function (mixed $schemaVersion) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
-            'manifest' => p73Manifest(['manifest_schema_version' => $schemaVersion]),
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
+            'manifest' => backupManifestFixture(['manifest_schema_version' => $schemaVersion]),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -240,7 +240,7 @@ it('rejects an unsupported manifest schema version exactly as the existing backu
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('unsupported backup manifest schema_version');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'a future numeric schema' => 3,
@@ -253,17 +253,17 @@ it('rejects an unsupported manifest schema version exactly as the existing backu
 ]);
 
 it('still accepts a legacy schema 1 manifest, and a schema 2 manifest predating the target field', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $legacy = p73BuildBackup($scratch.'/source-legacy', '20260115-120000', [
+        $legacy = buildBackupFixture($scratch.'/source-legacy', '20260115-120000', [
             'manifest' => [
                 'project' => 'rateguru',
                 'environment' => 'staging',
                 'created_at' => '2025-01-01T00:00:00Z',
                 'hostname' => 'legacy-host',
                 'database' => 'parity_db',
-                'release' => P73_RELEASE,
+                'release' => FIXTURE_RELEASE,
             ],
         ]);
         $operation = verifyBackupStage($scratch, $legacy, '20260115-120000-aaa111');
@@ -271,21 +271,21 @@ it('still accepts a legacy schema 1 manifest, and a schema 2 manifest predating 
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', $operation]);
         expect($result['exit'])->toBe(0, $result['output']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $preCutover = p73BuildBackup($scratch.'/source-precutover', '20260115-120000', [
-            'manifest' => p73Manifest(['target' => null]),
+        $preCutover = buildBackupFixture($scratch.'/source-precutover', '20260115-120000', [
+            'manifest' => backupManifestFixture(['target' => null]),
         ]);
         $operation = verifyBackupStage($scratch, $preCutover, '20260115-120000-bbb222');
 
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', $operation]);
         expect($result['exit'])->toBe(0, $result['output']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -294,15 +294,15 @@ it('still accepts a legacy schema 1 manifest, and a schema 2 manifest predating 
 // =============================================================================
 
 it('accepts a backup with no recoverable release identity for an ordinary verification', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         // Exactly what backup writes when a target had no current release:
         // a historical backup that restore-test has always accepted, and
         // that stays acceptable for a non-destructive verification.
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'release_json' => "{}\n",
-            'manifest' => p73Manifest(['release' => 'unknown']),
+            'manifest' => backupManifestFixture(['release' => 'unknown']),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -310,17 +310,17 @@ it('accepts a backup with no recoverable release identity for an ordinary verifi
 
         expect($result['exit'])->toBe(0, $result['output']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses the same backup for a destructive restore, because source_sha cannot be determined', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'release_json' => "{}\n",
-            'manifest' => p73Manifest(['release' => 'unknown']),
+            'manifest' => backupManifestFixture(['release' => 'unknown']),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -329,17 +329,17 @@ it('refuses the same backup for a destructive restore, because source_sha cannot
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('carries no release');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a destructive restore when release.json carries a malformed release or source_sha', function (array $releaseJson, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'release_json' => $releaseJson,
-            'manifest' => p73Manifest(['release' => 'unknown']),
+            'manifest' => backupManifestFixture(['release' => 'unknown']),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -348,39 +348,39 @@ it('refuses a destructive restore when release.json carries a malformed release 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain($expected);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'no source_sha at all' => [
-        ['release' => P73_RELEASE],
+        ['release' => FIXTURE_RELEASE],
         'carries no source_sha',
     ],
     // jq -r collapses a JSON number into text, so 1234567 would satisfy a
     // bare hex regex and be reported as a real commit.
     'a numeric source_sha' => [
-        ['release' => P73_RELEASE, 'source_sha' => 1234567],
+        ['release' => FIXTURE_RELEASE, 'source_sha' => 1234567],
         'source_sha is not a JSON string (number)',
     ],
     'a numeric release' => [
-        ['release' => 42, 'source_sha' => P73_SOURCE_SHA],
+        ['release' => 42, 'source_sha' => FIXTURE_SOURCE_SHA],
         'release is not a JSON string (number)',
     ],
     'a source_sha that is not a commit' => [
-        ['release' => P73_RELEASE, 'source_sha' => 'not-a-sha'],
+        ['release' => FIXTURE_RELEASE, 'source_sha' => 'not-a-sha'],
         'malformed source_sha',
     ],
     'a release that is not a RateGuru release ID' => [
-        ['release' => 'HEAD', 'source_sha' => P73_SOURCE_SHA],
+        ['release' => 'HEAD', 'source_sha' => FIXTURE_SOURCE_SHA],
         'malformed release',
     ],
 ]);
 
 it('refuses a destructive restore when the manifest release and release.json disagree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
-            'manifest' => p73Manifest(['release' => P73_OTHER_RELEASE]),
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
+            'manifest' => backupManifestFixture(['release' => FIXTURE_OTHER_RELEASE]),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -389,16 +389,16 @@ it('refuses a destructive restore when the manifest release and release.json dis
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('does not match release.json release');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('accepts a manifest release of unknown alongside a fully specified release.json', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
-            'manifest' => p73Manifest(['release' => 'unknown']),
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
+            'manifest' => backupManifestFixture(['release' => 'unknown']),
         ]);
         $operation = verifyBackupStage($scratch, $backup);
 
@@ -407,15 +407,15 @@ it('accepts a manifest release of unknown alongside a fully specified release.js
         expect($result['exit'])->toBe(0, $result['output']);
         expect($result['output'])->toContain('recovery identity: OK');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('writes a verified identity document carrying build identity and no secret', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
 
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', $operation, '--for-restore']);
@@ -433,8 +433,8 @@ it('writes a verified identity document carrying build identity and no secret', 
             'backup_namespace' => 'parity',
             'operation' => $operation,
             'for_restore' => true,
-            'release' => P73_RELEASE,
-            'source_sha' => P73_SOURCE_SHA,
+            'release' => FIXTURE_RELEASE,
+            'source_sha' => FIXTURE_SOURCE_SHA,
         ]);
 
         // Public build identity only: no checksum digest, no environment
@@ -444,7 +444,7 @@ it('writes a verified identity document carrying build identity and no secret', 
             ->not->toContain('DB_PASSWORD');
         expect(array_keys($identity))->not->toContain('checksum');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -453,10 +453,10 @@ it('writes a verified identity document carrying build identity and no secret', 
 // =============================================================================
 
 it('accepts an archive of ordinary directories and regular files under app/', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
         $staged = $scratch.'/run/restores/parity-target/'.$operation.'/selected-backup';
 
@@ -474,15 +474,15 @@ it('accepts an archive of ordinary directories and regular files under app/', fu
         expect($result['exit'])->toBe(0, $result['output']);
         expect($result['output'])->toContain('storage archive: OK');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses an archive that would escape app/ or create anything but a directory or a regular file', function (array $entries, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
         $staged = $scratch.'/run/restores/parity-target/'.$operation.'/selected-backup';
 
@@ -493,7 +493,7 @@ it('refuses an archive that would escape app/ or create anything but a directory
         expect($result['exit'])->not->toBe(0, 'the archive must be refused: '.$expected);
         expect($result['output'])->toContain($expected);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'an absolute path' => [
@@ -543,10 +543,10 @@ it('refuses an archive that would escape app/ or create anything but a directory
 ]);
 
 it('refuses a storage archive with no entries at all', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000');
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000');
         $operation = verifyBackupStage($scratch, $backup);
         $staged = $scratch.'/run/restores/parity-target/'.$operation.'/selected-backup';
 
@@ -559,15 +559,15 @@ it('refuses a storage archive with no entries at all', function () {
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('storage archive is empty');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses an unreadable storage archive', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $backup = p73BuildBackup($scratch.'/source', '20260115-120000', [
+        $backup = buildBackupFixture($scratch.'/source', '20260115-120000', [
             'storage_archive_bytes' => "this is not a gzip archive\n",
         ]);
         $operation = verifyBackupStage($scratch, $backup);
@@ -577,7 +577,7 @@ it('refuses an unreadable storage archive', function () {
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('storage archive is unreadable');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -586,7 +586,7 @@ it('refuses an unreadable storage archive', function () {
 // =============================================================================
 
 it('fails when the operation workspace or the staged backup does not exist', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $result = verifyBackupRun($scratch, ['--target', 'parity-target', '--operation', '20260115-120000-abc123']);
@@ -594,12 +594,12 @@ it('fails when the operation workspace or the staged backup does not exist', fun
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('restore operation workspace does not exist');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects a planned target before reading any staged backup', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $result = verifyBackupRun($scratch, ['--target', 'planned-target', '--operation', '20260115-120000-abc123']);
@@ -607,7 +607,7 @@ it('rejects a planned target before reading any staged backup', function () {
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('lifecycle=planned');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 

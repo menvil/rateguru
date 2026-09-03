@@ -1,7 +1,7 @@
 # Deployment-observability grant, kept separate from the operational grant in
 # /etc/sudoers.d/rateguru-deploy on purpose: install-target-perimeter owns that
 # file and the three operational wrappers it names, while Laravel Nightwatch is
-# still a Phase 6B/6C evaluation whose whole footprint has to stay removable in
+# still the Nightwatch evaluation/6C evaluation whose whole footprint has to stay removable in
 # one step (install-nightwatch-agent --remove). Two drop-ins, two owners.
 #
 # The grant is strictly narrower than the operational one. The wrapper it names

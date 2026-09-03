@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 7.2: target-aware offsite restore test.
+ * : target-aware offsite restore test.
  *
  * These tests execute the real shipped
  * `infrastructure/scripts/offsite-restore-test` — never a reimplementation of

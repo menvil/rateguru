@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 7.1: target-aware local backup.
+ * : target-aware local backup.
  *
  * These tests execute the real shipped `infrastructure/scripts/backup` —
  * never a reimplementation of its logic — with every host dependency

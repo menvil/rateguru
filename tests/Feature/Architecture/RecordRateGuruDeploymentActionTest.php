@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.2A: .github/actions/record-rateguru-deployment — the single place a
+ * the deployment observability work: .github/actions/record-rateguru-deployment — the single place a
  * successful RateGuru deployment state transition is recorded, in Sentry and in
  * Laravel Nightwatch alike.
  *

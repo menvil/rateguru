@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 5 slice 5.2: infrastructure/scripts/install-bootstrap-runtime — the
+ * : infrastructure/scripts/install-bootstrap-runtime — the
  * reproducible base/runtime package installer for a clean Ubuntu 22.04 host.
  *
  * Every test executes the real, shipped script as a subprocess — never a
@@ -22,7 +22,7 @@ use Symfony\Component\Yaml\Yaml;
  * repositories configured by the operator, unrelated NodeSource/ClickHouse/
  * Datadog sources on the side — recognized, satisfied, and never touched).
  *
- * rclone is a managed external runtime binary (Phase 5.2.1): the fixture
+ * rclone is a managed external runtime binary (the runtime bootstrap.1): the fixture
  * simulates the canonical binary, the committed external-runtimes contract
  * and signing key, the official download origin (through the curl stub) and
  * the clearsign verification (through the gpg stub). The archive bytes are
@@ -226,7 +226,7 @@ function bootstrapRuntimeExpectedSources(string $label, string $uri, string $sui
 {
     return implode("\n", [
         "# RateGuru {$label} repository — managed by install-bootstrap-runtime",
-        '# (Phase 5 slice 5.2). Do not edit: re-run --apply to reconcile.',
+        '#. Do not edit: re-run --apply to reconcile.',
         'Types: deb',
         "URIs: {$uri}",
         "Suites: {$suite}",
@@ -322,10 +322,10 @@ function bootstrapRuntimeWriteHostFiles(string $scratch, array $options): void
         file_put_contents($scratch.'/keyrings/rateguru-pgdg.gpg', $pgdgKeyringContent);
     }
 
-    // A decoy RateGuru runtime tree: slice 5.2 must never touch application
+    // A decoy RateGuru runtime tree: install-bootstrap-runtime must never touch application
     // paths, so its continued byte-identity is asserted after --apply.
     expect(@mkdir($scratch.'/fs/home-www-rateguru', 0o755, true))->toBeTrue();
-    file_put_contents($scratch.'/fs/home-www-rateguru/decoy.txt', "application files — never touched by slice 5.2\n");
+    file_put_contents($scratch.'/fs/home-www-rateguru/decoy.txt', "application files — never touched by install-bootstrap-runtime\n");
 
     // dpkg database fixture: one package name per line.
     $packages = $options['packages'] ?? 'all';
@@ -934,7 +934,7 @@ it('reports the full work list on a clean Ubuntu 22.04 host and exits non-zero',
         $env = bootstrapRuntimeCleanHostFixture($scratch, ['tools' => 'minimal']);
         [$exit, $output] = bootstrapRuntimeRun(['--check'], $env);
 
-        expect($exit)->toBe(1, "a clean host cannot satisfy the slice 5.2 contract:\n{$output}");
+        expect($exit)->toBe(1, "a clean host cannot satisfy the install-bootstrap-runtime contract:\n{$output}");
         expect($output)->toContain('SLICE 5.2 CONTRACT: NOT SATISFIED');
         expect($output)->toContain('MISSING  repo:php');
         expect($output)->toContain('MISSING  repo:pgdg');
@@ -2402,7 +2402,7 @@ it('shares the committed external-runtimes contract with bootstrap-host-prefligh
     expect(File::get(base_path('infrastructure/scripts/bootstrap-host-preflight')))->toContain($contractPath);
 });
 
-it('derives its required tool inventory from the Phase 5.1 canonical contract', function () {
+it('derives its required tool inventory from the clean-host bootstrap.1 canonical contract', function () {
     $preflight = File::get(base_path('infrastructure/scripts/bootstrap-host-preflight'));
     $installerPackages = bootstrapRuntimeRequiredPackages();
 

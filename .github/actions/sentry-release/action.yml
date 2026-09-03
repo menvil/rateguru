@@ -103,7 +103,7 @@ runs:
       with:
         release: ${{ inputs.release-id }}
         # Supplying `environment` is what turns this from "a release exists"
-        # into "this release is deployed here", which is the marker Phase 6
+        # into "this release is deployed here", which is the marker the observability work
         # actually needs.
         environment: ${{ inputs.environment }}
         # Deliberately `skip`, and this is load-bearing rather than a default.

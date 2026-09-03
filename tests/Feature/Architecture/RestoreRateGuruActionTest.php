@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.4: .github/actions/restore-rateguru — the ONE GitHub-side restore
+ * the controlled code alignment: .github/actions/restore-rateguru — the ONE GitHub-side restore
  * implementation, and the only remote route into a restore that exists.
  *
  * What these tests are about is not "does it call ssh". It is the two

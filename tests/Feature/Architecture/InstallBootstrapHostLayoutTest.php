@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.3: infrastructure/scripts/install-bootstrap-host-layout —
+ * : infrastructure/scripts/install-bootstrap-host-layout —
  * users, groups and filesystem bootstrap for a clean RateGuru host.
  *
  * Every test executes the real, shipped script as a subprocess — never a
@@ -117,7 +117,7 @@ function hostLayoutCleanGroup(): string
 }
 
 /**
- * The current staging host's identities: every slice 5.3 account, group and
+ * The current staging host's identities: every install-bootstrap-host-layout account, group and
  * membership already exists.
  */
 function hostLayoutCompliantPasswd(): string
@@ -142,7 +142,7 @@ function hostLayoutCompliantGroup(): string
 // =============================================================================
 
 /**
- * The slice 5.3 directory contract: logical path => [owner, group, mode].
+ * The install-bootstrap-host-layout directory contract: logical path => [owner, group, mode].
  *
  * @return array<string, array{0: string, 1: string, 2: int}>
  */
@@ -672,7 +672,7 @@ it('reports the full work list on a clean Phase-5.2-compliant host and exits non
         $env = hostLayoutFixture($scratch, ['profile' => 'clean']);
         [$exit, $output] = hostLayoutRun(['--check'], $env);
 
-        expect($exit)->toBe(1, "a clean host cannot satisfy the slice 5.3 contract:\n{$output}");
+        expect($exit)->toBe(1, "a clean host cannot satisfy the install-bootstrap-host-layout contract:\n{$output}");
         expect($output)->toContain('SLICE 5.3 CONTRACT: NOT SATISFIED');
 
         // Prerequisites are present (5.2 completed); identities and the
@@ -787,15 +787,15 @@ it('fails when a package-created prerequisite account is absent, naming the inco
 
         [$exit, $output] = hostLayoutRun(['--check'], $env);
         expect($exit)->toBe(1);
-        expect($output)->toContain('MISSING  prerequisite:user:www-data — missing — the Phase 5.2 runtime prerequisite is incomplete');
+        expect($output)->toContain('MISSING  prerequisite:user:www-data — missing — the runtime prerequisite is incomplete');
         expect($output)->toContain('MISSING  prerequisite:group:www-data — missing');
-        expect($output)->toContain('-> apply: run install-bootstrap-runtime --apply (slice 5.2) first — package-owned accounts are never created here');
+        expect($output)->toContain('-> apply: run install-bootstrap-runtime --apply first — package-owned accounts are never created here');
 
         // --apply fails closed before any mutation.
         $before = hostLayoutTreeSnapshot($scratch);
         [$exit, $output] = hostLayoutRun(['--apply'], $env);
         expect($exit)->toBe(1);
-        expect($output)->toContain("ERROR: package-created account 'www-data' is missing — the Phase 5.2 runtime prerequisite is incomplete");
+        expect($output)->toContain("ERROR: package-created account 'www-data' is missing — the runtime prerequisite is incomplete");
         expect(hostLayoutTreeSnapshot($scratch))->toBe($before);
         expect(hostLayoutLog($scratch, 'identity.log'))->toBe('');
     } finally {
@@ -1624,10 +1624,10 @@ it('keeps the structural directory contract in parity with bootstrap-host-prefli
 // Roadmap structure (stable facts only — never prose)
 // =============================================================================
 
-it('keeps the roadmap structure: Phase 5 completed, Phase 6 current, Phases 7-10 planned with their slices and rehearsal gates', function () {
+it('keeps the roadmap structure: the clean-host bootstrap completed, the observability work current, Phases 7-10 planned with their slices and rehearsal gates', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
-    // Phase 5 closed once every mutating slice had been accepted on a real
+    // the clean-host bootstrap closed once every mutating slice had been accepted on a real
     // host — 5.3 and 5.4 on staging, 5.5 on staging, 5.6 on a clean VPS.
     expect($roadmap)->toMatch('/^\|\s*5\s*\|\s*Infrastructure installer and clean-VPS bootstrap\s*\|\s*✅ completed\s*\|$/m');
     expect($roadmap)->toContain('5.3 Users, groups and filesystem — completed');
@@ -1635,7 +1635,7 @@ it('keeps the roadmap structure: Phase 5 completed, Phase 6 current, Phases 7-10
     expect($roadmap)->toContain('5.5 Bootstrap orchestrator — completed');
     expect($roadmap)->toContain('5.6 Clean-VPS acceptance — completed');
 
-    // Phase 6 took over as the single current phase.
+    // the observability work took over as the single current phase.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)->toMatch('/^\|\s*6\s*\|[^|]+\|\s*🚧 current\s*\|$/m');
 
@@ -1668,7 +1668,7 @@ it('keeps the roadmap structure: Phase 5 completed, Phase 6 current, Phases 7-10
 });
 
 // =============================================================================
-// www-data as a code-group reader (Phase 5.6 clean-VPS blocker #2).
+// www-data as a code-group reader (the clean-VPS blocker #2).
 //
 // Nginx serves `root <target>/current/public` with
 // `try_files $uri $uri/ /index.php?$query_string`, so its www-data workers

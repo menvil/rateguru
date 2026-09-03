@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.1's own scope guard: the operational model it establishes, and the
+ * the shared operation actions's own scope guard: the operational model it establishes, and the
  * architecture it deliberately does not build.
  *
  * The model is one BUILD, one DEPLOY and one ROLLBACK implementation, with
@@ -62,7 +62,7 @@ it('has exactly one build, one deploy and one rollback implementation', function
     expect($actions)->toBe([
         'build-rateguru',
         'deploy-rateguru',
-        // Phase 7.2's two additions: one PREPARE implementation and one
+        // Prepare Host's two additions: one PREPARE implementation and one
         // deployment-recording implementation. Still one action per operation,
         // never a per-environment fork of any of them.
         'prepare-rateguru-host',
@@ -70,7 +70,7 @@ it('has exactly one build, one deploy and one rollback implementation', function
         // One REPAIR implementation, covering both environments. Transport
         // only: it carries no material and cannot deploy, restore or prepare.
         'repair-rateguru-target',
-        // Phase 7.4's one addition: one RESTORE implementation, covering all
+        // One RESTORE implementation, covering all
         // three of its modes and both environments.
         'restore-rateguru',
         'rollback-rateguru',
@@ -91,7 +91,7 @@ it('keeps one operator-facing workflow per environment, with no target selector 
         // operator-facing operation here.
         'repair-production.yml',
         'repair-staging.yml',
-        // Phase 7.4: one restore workflow per environment, exactly like every
+        // One restore workflow per environment, exactly like every
         // other operator-facing operation here.
         'restore-production.yml',
         'restore-staging.yml',
@@ -159,7 +159,7 @@ it('pairs each fixed target with the environment that owns it', function () {
 });
 
 it('introduces no durable release-artifact archive of any kind', function () {
-    // The cancelled Phase 7.1 architecture, asserted absent by its own names
+    // The cancelled the shared operation actions architecture, asserted absent by its own names
     // so it cannot creep back in under a rename of the phase.
     foreach (phase71OperationalFiles() as $path) {
         $source = File::get($path);
@@ -221,7 +221,7 @@ it('introduces no durable release-artifact archive of any kind', function () {
     ]);
 });
 
-it('records Phase 7 as the consolidated plan, with the artifact archive gone', function () {
+it('records the disaster-recovery work as the consolidated plan, with the artifact archive gone', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     // The obsolete slice, and the metadata mapping it required, are gone.
@@ -232,7 +232,7 @@ it('records Phase 7 as the consolidated plan, with the artifact archive gone', f
         ->not->toContain('rateguru/artifacts/')
         ->not->toContain('retrieve the exact immutable artifact');
 
-    // The final Phase 7 headings, in order.
+    // The final the disaster-recovery work headings, in order.
     foreach ([
         '**7.1 Common operational primitives',
         '**7.2 Deployment observability + Prepare Host',
@@ -252,7 +252,7 @@ it('records Phase 7 as the consolidated plan, with the artifact archive gone', f
     );
 
     expect($positions)->toBe(array_values(array_filter($positions)))
-        ->and($positions)->toBe(collect($positions)->sort()->values()->all(), 'the Phase 7 slices are out of order');
+        ->and($positions)->toBe(collect($positions)->sort()->values()->all(), 'the disaster-recovery work slices are out of order');
 
     // The four scopes stay explicitly distinguished.
     expect($roadmap)
@@ -262,17 +262,18 @@ it('records Phase 7 as the consolidated plan, with the artifact archive gone', f
         ->toContain('**Recover Host** — full replacement-server recovery')
         ->toContain('rebuilds the application from the exact `source_sha`');
 
-    // Phase 6 is still the single current phase; 7.1 landing does not open 7.
+    // the observability work is still the single current phase; 7.1 landing does not open 7.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)->toMatch('/^\|\s*7\s*\|[^|]+\|\s*⏳ planned\s*\|$/m');
 });
 
-it('implements nothing from Phase 7.5 onwards', function () {
-    // Prepare Host landed in Phase 7.2, Restore Target Data in 7.3 and the
+it('implements nothing from Repair Target onwards', function () {
+    // Prepare Host landed in Prepare Host, Restore Target Data in 7.3 and the
     // GitHub restore surface with controlled code alignment in 7.4; each has
-    // its own scope guard (Phase72ScopeTest, Phase73ScopeTest,
-    // Phase74ScopeTest), and target-scoped repair followed. Recover remains
-    // future work, and nothing may ship an implementation of it.
+    // its own scope guard (DeploymentObservabilityScopeTest,
+    // RestoreServerPrimitivesScopeTest, RestoreOperatorSurfaceScopeTest), and
+    // target-scoped repair followed. Recover remains future work, and nothing
+    // may ship an implementation of it.
     foreach ([
         'infrastructure/scripts/recover-host',
         '.github/workflows/recover-staging.yml',
@@ -280,11 +281,11 @@ it('implements nothing from Phase 7.5 onwards', function () {
         '.github/actions/recover-rateguru-host/action.yml',
     ] as $futureWork) {
         expect(File::exists(base_path($futureWork)))
-            ->toBeFalse("{$futureWork} is Phase 7.5+ work and must not exist yet");
+            ->toBeFalse("{$futureWork} is Repair Target+ work and must not exist yet");
     }
 
     // restore-test stays what it always was: a scratch-database integrity
-    // check, never a live restore. Phase 7.3's live restore is a separate
+    // check, never a live restore. Restore Target Data's live restore is a separate
     // primitive built beside it, not a mutation of it.
     expect(File::exists(base_path('infrastructure/scripts/restore-test')))->toBeTrue();
     expect(File::get(base_path('infrastructure/scripts/restore-test')))
@@ -292,8 +293,8 @@ it('implements nothing from Phase 7.5 onwards', function () {
         ->not->toContain('ALTER DATABASE');
 });
 
-it('leaves every accepted Phase 4 and Phase 5 primitive in place', function () {
-    // Phase 7.1 removes duplicated orchestration; it does not collapse the
+it('leaves every accepted the target-aware migration and the clean-host bootstrap primitive in place', function () {
+    // the shared operation actions removes duplicated orchestration; it does not collapse the
     // operational scripts, whose ownership boundaries and side effects differ.
     foreach ([
         'deploy',
@@ -338,13 +339,13 @@ it('serializes every mutation of the same target in the GitHub orchestration lay
     //
     // Every place a target is mutated, and the group that must cover it:
     //
-    // Phase 7.2 added two operations that name a target: preparing its host,
+    // Prepare Host added two operations that name a target: preparing its host,
     // which reconfigures the machine a deployed release runs on and therefore
     // belongs in the same domain, and recording an already-completed
     // deployment, which mutates nothing on the target but inherits the domain
     // of the workflow it reports on.
     //
-    // Phase 7.4 added four more per restore workflow, and they are the reason
+    // the controlled code alignment added four more per restore workflow, and they are the reason
     // the group is declared at WORKFLOW level there rather than per job: the
     // restore, the controlled alignment deploy and the resume are one logical
     // mutation of one target, and a deploy or rollback slipping in between two

@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 4: target-aware release cleanup.
+ * the target-aware migration: target-aware release cleanup.
  *
  * These tests execute the real shipped `infrastructure/scripts/cleanup` as a
  * subprocess — never a reimplementation of its logic — with every host
@@ -1790,7 +1790,7 @@ it('passes bash -n and never sources common or the registry unsafely', function 
 });
 
 // =============================================================================
-// Phase 7.4: the restore interlock
+// the controlled code alignment: the restore interlock
 // =============================================================================
 //
 // A target held after a restore is mid-way through a controlled code

@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 7.1: target-aware local restore test.
+ * : target-aware local restore test.
  *
  * These tests execute the real shipped `infrastructure/scripts/restore-test`
  * — never a reimplementation of its logic — with every host dependency

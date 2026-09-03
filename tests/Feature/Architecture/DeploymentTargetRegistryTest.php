@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 1: the deployment target registry.
+ * the target-aware migration: the deployment target registry.
  *
  * These tests exercise the shipped artefacts — the committed registry, the real
  * `targets` CLI, and the target helper block extracted from `common` — rather
@@ -1290,7 +1290,7 @@ it('changes no runtime configuration in this slice', function () {
     // Nginx, PHP-FPM, Supervisor and the Laravel scheduler cron are
     // untouched: nothing in them may reference the registry or a target ID.
     // config/cron/rateguru-backups and config/sudoers/rateguru-deploy
-    // legitimately graduated to --target/staging-main in Phase 4 slice 8 —
+    // legitimately graduated to --target/staging-main in the target-aware migration —
     // see TargetPerimeterTest.php for their own coverage — and are
     // deliberately absent here.
     $configs = [
@@ -1322,7 +1322,7 @@ it('changes no runtime configuration in this slice', function () {
     }
 });
 
-it('records the registry as a completed Phase 4 slice inside a completed phase', function () {
+it('records the registry as a completed the target-aware migration slice inside a completed phase', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)
@@ -1335,7 +1335,7 @@ it('records the registry as a completed Phase 4 slice inside a completed phase',
         ->not->toContain('## 4. Multi-target production model — current')
         ->not->toMatch('/^\|\s*4\s*\|\s*Multi-target production model\s*\|\s*🚧 current\s*\|$/m');
 
-    // Phase 4 is closed, and Phase 5 has since closed behind it; the roadmap
+    // the target-aware migration is closed, and the clean-host bootstrap has since closed behind it; the roadmap
     // still names exactly one current phase.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)

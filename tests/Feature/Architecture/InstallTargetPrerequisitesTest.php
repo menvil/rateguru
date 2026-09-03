@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.2B: infrastructure/scripts/install-target-prerequisites — the safe
+ * Prepare Host: infrastructure/scripts/install-target-prerequisites — the safe
  * delivery of operator-supplied external material onto a host, and the refusal
  * to overwrite or rotate anything already there.
  *
@@ -119,7 +119,7 @@ function itpValidHostScope(string $scratch): void
     }
 }
 
-/** The identities and directories slice 5.3 creates. */
+/** The identities and directories install-bootstrap-host-layout creates. */
 function itpCreateTargetDirectories(string $scratch): void
 {
     foreach ([
@@ -179,7 +179,7 @@ it('derives every Nginx-referenced destination from the committed vhosts', funct
     }
 });
 
-it('uses the same external-prerequisite contract slice 5.4 gates on', function () {
+it('uses the same external-prerequisite contract install-bootstrap-services gates on', function () {
     $prerequisites = File::get(itpScript());
     $services = File::get(base_path('infrastructure/scripts/install-bootstrap-services'));
 

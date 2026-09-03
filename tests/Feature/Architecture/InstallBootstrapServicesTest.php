@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.4: infrastructure/scripts/install-bootstrap-services —
+ * : infrastructure/scripts/install-bootstrap-services —
  * services and committed host configuration for a prepared RateGuru host.
  *
  * Every test executes the real, shipped script as a subprocess — never a
@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\File;
  * nothing touches the CI runner's real services or /etc.
  *
  * The profiles that matter mirror the real situations: a genuinely clean
- * PRE_DEPLOY host straight after slice 5.3 (everything to install, queue
+ * PRE_DEPLOY host straight after install-bootstrap-host-layout (everything to install, queue
  * activation deferred), the current DEPLOYED staging host (mostly PASS,
  * second apply mutates nothing), and every broken/drifted/conflicting shape
  * in between. tits-guru stays lifecycle=planned and must receive zero
@@ -407,7 +407,7 @@ function bsvcFixture(string $scratch, array $options = []): array
         file_put_contents($fs.$path, 'SECRET-SENTINEL-'.md5($path)."\n");
     }
 
-    // Fixture passwd: the slice 5.3 accounts exist.
+    // Fixture passwd: the install-bootstrap-host-layout accounts exist.
     // Group database: the code group's GID is what an Nginx worker must
     // carry in its supplementary groups.
     file_put_contents($fs.'/etc-group', implode("\n", [
@@ -626,7 +626,7 @@ it('requires root for every mode and mutates nothing without it', function () {
 // Prerequisite gates (5.2/5.3 authoritative verifies)
 // =============================================================================
 
-it('stops --apply before any mutation when the slice 5.2 or 5.3 verify fails', function () {
+it('stops --apply before any mutation when the install-bootstrap-runtime or 5.3 verify fails', function () {
     foreach (['runtime-installer' => '5.2', 'hostlayout-installer' => '5.3'] as $child => $slice) {
         $scratch = bsvcScratchDir();
 
@@ -1457,7 +1457,7 @@ it('documents the ownership boundaries and the PRE_DEPLOY/DEPLOYED distinction i
 });
 
 // =============================================================================
-// Nginx worker supplementary groups (Phase 5.6 clean-VPS blocker #2).
+// Nginx worker supplementary groups (the clean-VPS blocker #2).
 //
 // Adding www-data to a code group in /etc/group does not change the
 // supplementary groups of Nginx workers that are already running. A host can

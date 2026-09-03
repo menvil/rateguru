@@ -3,13 +3,13 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 2: target-aware health-check and status.
+ * the target-aware migration: target-aware health-check and status.
  *
  * These tests execute the real shipped scripts as subprocesses — never a
  * reimplementation of their logic — with every host dependency (common's
  * deployment.conf, the target registry, the targets validator, health-check
  * itself, and curl) supplied through the RATEGURU_* test-override contract
- * already established in Phase 4 slice 1. No test touches the network,
+ * already established in the target-aware migration. No test touches the network,
  * systemctl, or any real /home/www path.
  */
 function targetOpsCommonFile(): string
@@ -1177,7 +1177,7 @@ it('builds jq programs only through --arg, never from interpolated target input'
 
 // --- roadmap and runbook -----------------------------------------------------
 
-it('records slices 1-9 completed, and Phase 4 with them', function () {
+it('records slices 1-9 completed, and the target-aware migration with them', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)
@@ -1197,8 +1197,8 @@ it('records slices 1-9 completed, and Phase 4 with them', function () {
         ->not->toContain('## 4. Multi-target production model — current')
         ->not->toMatch('/^\|\s*4\s*\|\s*Multi-target production model\s*\|\s*🚧 current\s*\|$/m');
 
-    // Phase 4 is closed, and so is Phase 5 — the roadmap still names exactly
-    // one current phase, which has since moved on to Phase 6.
+    // the target-aware migration is closed, and so is the clean-host bootstrap — the roadmap still names exactly
+    // one current phase, which has since moved on to the observability work.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)
         ->toMatch('/^\|\s*5\s*\|\s*Infrastructure installer and clean-VPS bootstrap\s*\|\s*✅ completed\s*\|$/m');
@@ -1245,7 +1245,7 @@ it('leaves every other operational script and workflow byte-identical to develop
     $unchanged = [
         // Every operational script, common, both installers, the three
         // generic wrappers, sudoers and deployment.conf.example are all
-        // deliberately absent here — this is the final Phase 4 cutover
+        // deliberately absent here — this is the final the target-aware migration cutover
         // slice, and all of them change. Only the genuinely static host
         // configs are asserted unchanged.
         'infrastructure/config/ssh/70-rateguru-deploy.conf',
@@ -1258,7 +1258,7 @@ it('leaves every other operational script and workflow byte-identical to develop
         // Both workflow files, and the target registry itself, are
         // deliberately excluded here: a later slice (the infrastructure CLI
         // executable-mode fix) legitimately adds an executable-bit
-        // verification step to each workflow, Phase 4 slice 8 added a
+        // verification step to each workflow, the target-aware migration added a
         // required deployment-target input to the staging deploy workflow,
         // and the backup-retention hardening slice added
         // backup.minimum_retained_backups (and retuned staging's windows) in

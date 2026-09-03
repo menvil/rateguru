@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3: `restore-storage` — the staged filesystem swap.
+ * Restore Target Data: `restore-storage` — the staged filesystem swap.
  *
  * Executes the real shipped infrastructure/scripts/restore-storage against a
  * real scratch target tree: real extraction, real renames, real ownership and
@@ -20,11 +20,11 @@ function restoreStorageScript(): string
  */
 function restoreStorageRun(string $scratch, string $operationId, string $step, array $envOverrides = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-    $env = p73BaseEnv($scratch, $registryPath, $targetsPath, $envOverrides);
+    $env = infraScriptEnv($scratch, $registryPath, $targetsPath, $envOverrides);
 
-    [$exit, $output] = p73Run(p73PatchedScript($scratch, 'restore-storage'), [
+    [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'restore-storage'), [
         '--target', 'parity-target', '--operation', $operationId, '--'.$step,
     ], $env);
 
@@ -33,10 +33,10 @@ function restoreStorageRun(string $scratch, string $operationId, string $step, a
 
 function restoreStorageFixture(string $scratch, array $options = []): string
 {
-    p73TargetTree($scratch);
+    targetTreeFixture($scratch);
 
     $operationId = $options['operation'] ?? '20260115-120000-abc123';
-    p73Workspace(
+    restoreWorkspaceFixture(
         $scratch,
         $operationId,
         array_merge(['phase' => 'database-staged'], $options['state'] ?? []),
@@ -65,7 +65,7 @@ function restoreStorageEntries(string $scratch): array
 // =============================================================================
 
 it('extracts the archive into a sibling of the live tree and never touches the live tree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -87,12 +87,12 @@ it('extracts the archive into a sibling of the live tree and never touches the l
         // what makes the activation renames same-filesystem.
         expect(restoreStorageEntries($scratch))->toBe(['.restore-'.$operation, 'app', 'framework']);
 
-        $state = p73State($scratch.'/run/restores/parity-target/'.$operation);
+        $state = restoreOperationState($scratch.'/run/restores/parity-target/'.$operation);
         expect($state['phase'])->toBe('storage-staged');
         expect($state['storage_stage_path'])->toBe($stageParent.'/app');
         expect($state['pre_restore_storage_path'])->toBe($storage.'/.pre-restore-app-'.$operation);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -123,7 +123,7 @@ it('gives the web group the two directories Nginx needs, and nothing else', func
         test()->markTestSkipped('needs a secondary group to distinguish the web group from the runtime group');
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch, [
@@ -163,7 +163,7 @@ it('gives the web group the two directories Nginx needs, and nothing else', func
         expect(trim((string) shell_exec('stat -c "%G" '.escapeshellarg($app.'/private/secret-report.pdf'))))->toBe($runtimeGroup);
         expect(trim((string) shell_exec('stat -c "%a" '.escapeshellarg($app.'/private/secret-report.pdf'))))->toBe('640');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -180,7 +180,7 @@ it('assigns the whole tree the runtime identity first, and the web group to exac
 });
 
 it('removes its own partially staged tree when staging fails after extraction', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -192,7 +192,7 @@ it('removes its own partially staged tree when staging fails after extraction', 
         // and only then fails the "did the archive produce app/?" check —
         // which is exactly the window in which a root-owned partial tree
         // would otherwise be left behind.
-        p73Archive($staged.'/storage-app.tar.gz', [
+        buildArchiveFixture($staged.'/storage-app.tar.gz', [
             ['name' => 'app', 'type' => 'file'],
         ]);
 
@@ -207,12 +207,12 @@ it('removes its own partially staged tree when staging fails after extraction', 
         expect(restoreStorageEntries($scratch))->toBe(['app', 'framework']);
         expect(is_file(restoreStorageRoot($scratch).'/app/live-marker.txt'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('keeps the staged tree when staging succeeds', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -224,12 +224,12 @@ it('keeps the staged tree when staging succeeds', function () {
 
         expect(is_dir(restoreStorageRoot($scratch).'/.restore-'.$operation.'/app'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to stage over an existing staging directory or pre-restore tree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -240,10 +240,10 @@ it('refuses to stage over an existing staging directory or pre-restore tree', fu
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('storage staging directory already exists');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -254,12 +254,12 @@ it('refuses to stage over an existing staging directory or pre-restore tree', fu
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('pre-restore storage tree already exists');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a symlinked live storage tree rather than following it', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -275,12 +275,12 @@ it('refuses a symlinked live storage tree rather than following it', function ()
         expect($result['output'])->toContain('live storage tree must be a real directory, not a symlink');
         expect(is_dir($storage.'/.restore-'.$operation))->toBeFalse('nothing may be extracted for an unsafe live tree');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('re-validates the archive immediately before extracting it as root', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -288,7 +288,7 @@ it('re-validates the archive immediately before extracting it as root', function
 
         // verify-backup already passed earlier in the operation; this proves
         // the archive is checked again at the last moment before extraction.
-        p73Archive($staged.'/storage-app.tar.gz', [
+        buildArchiveFixture($staged.'/storage-app.tar.gz', [
             ['name' => 'app', 'type' => 'dir'],
             ['name' => 'app/escape', 'type' => 'symlink', 'link' => '/etc/passwd'],
         ]);
@@ -299,12 +299,12 @@ it('re-validates the archive immediately before extracting it as root', function
         expect($result['output'])->toContain('contains a symbolic link');
         expect(is_dir(restoreStorageRoot($scratch).'/.restore-'.$operation))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects an archive whose members are not all under app/, before extracting', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch, [
@@ -327,7 +327,7 @@ it('rejects an archive whose members are not all under app/, before extracting',
         expect($result['output'])->toContain('storage archive contains an entry outside app/');
         expect(is_dir(restoreStorageRoot($scratch).'/.restore-'.$operation))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -336,7 +336,7 @@ it('rejects an archive whose members are not all under app/, before extracting',
 // =============================================================================
 
 it('swaps the staged tree in with two renames and retains the previous tree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -344,7 +344,7 @@ it('swaps the staged tree in with two renames and retains the previous tree', fu
         expect(restoreStorageRun($scratch, $operation, 'stage')['exit'])->toBe(0);
 
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
 
         $result = restoreStorageRun($scratch, $operation, 'activate');
         expect($result['exit'])->toBe(0, $result['output']);
@@ -358,9 +358,9 @@ it('swaps the staged tree in with two renames and retains the previous tree', fu
         // The previous tree is retained under its operation-scoped name.
         expect(is_file($storage.'/.pre-restore-app-'.$operation.'/live-marker.txt'))->toBeTrue();
 
-        expect(p73State($workspace)['phase'])->toBe('storage-activated');
+        expect(restoreOperationState($workspace)['phase'])->toBe('storage-activated');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -369,17 +369,17 @@ it('swaps the staged tree in with two renames and retains the previous tree', fu
 // =============================================================================
 
 it('reverses a completed swap and puts the original tree back', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
 
         expect(restoreStorageRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
         expect(restoreStorageRun($scratch, $operation, 'activate')['exit'])->toBe(0);
 
-        p73SetPhase($workspace, 'storage-activated');
+        setRestoreOperationPhase($workspace, 'storage-activated');
         $result = restoreStorageRun($scratch, $operation, 'compensate');
 
         expect($result['exit'])->toBe(0, $result['output']);
@@ -390,12 +390,12 @@ it('reverses a completed swap and puts the original tree back', function () {
         expect(is_file($storage.'/.restore-'.$operation.'/app/restored-marker.txt'))->toBeTrue();
         expect(file_exists($storage.'/.pre-restore-app-'.$operation))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('restores the original tree when activation stopped between the two renames', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -409,19 +409,19 @@ it('restores the original tree when activation stopped between the two renames',
         exec('mv '.escapeshellarg($storage.'/app').' '.escapeshellarg($storage.'/.pre-restore-app-'.$operation));
         expect(file_exists($storage.'/app'))->toBeFalse();
 
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
         $result = restoreStorageRun($scratch, $operation, 'compensate');
 
         expect($result['exit'])->toBe(0, $result['output']);
         expect(is_file($storage.'/app/live-marker.txt'))->toBeTrue();
         expect($result['output'])->toContain('original tree restored');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('does nothing when the live tree was never swapped', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch, ['state' => ['phase' => 'database-activated']]);
@@ -432,7 +432,7 @@ it('does nothing when the live tree was never swapped', function () {
         expect($result['output'])->toContain('nothing to undo');
         expect(is_file(restoreStorageRoot($scratch).'/app/live-marker.txt'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -441,7 +441,7 @@ it('does nothing when the live tree was never swapped', function () {
 // =============================================================================
 
 it('removes the pre-restore tree and the staging directory only at commit', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -449,18 +449,18 @@ it('removes the pre-restore tree and the staging directory only at commit', func
         $storage = restoreStorageRoot($scratch);
 
         expect(restoreStorageRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
         expect(restoreStorageRun($scratch, $operation, 'activate')['exit'])->toBe(0);
 
         expect(is_dir($storage.'/.pre-restore-app-'.$operation))->toBeTrue('the previous tree survives activation');
 
-        p73SetPhase($workspace, 'verified');
+        setRestoreOperationPhase($workspace, 'verified');
         expect(restoreStorageRun($scratch, $operation, 'commit')['exit'])->toBe(0);
 
         expect(restoreStorageEntries($scratch))->toBe(['app', 'framework']);
         expect(is_file($storage.'/app/restored-marker.txt'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -469,7 +469,7 @@ it('removes the pre-restore tree and the staging directory only at commit', func
 // =============================================================================
 
 it('never touches another target tree or anything outside this target shared storage', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch);
@@ -479,9 +479,9 @@ it('never touches another target tree or anything outside this target shared sto
         file_put_contents($scratch.'/other-project/shared/storage/app/keep.txt', "keep\n");
 
         expect(restoreStorageRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
         expect(restoreStorageRun($scratch, $operation, 'activate')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'verified');
+        setRestoreOperationPhase($workspace, 'verified');
         expect(restoreStorageRun($scratch, $operation, 'commit')['exit'])->toBe(0);
 
         expect(is_file($scratch.'/other-project/shared/storage/app/keep.txt'))->toBeTrue();
@@ -490,7 +490,7 @@ it('never touches another target tree or anything outside this target shared sto
         expect(is_file($scratch.'/target/shared/.env'))->toBeTrue();
         expect(is_link($scratch.'/target/current'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -522,7 +522,7 @@ it('removes only operation-scoped direct children of this target shared storage'
 });
 
 it('refuses every step when the operation is in the wrong phase or belongs to another target', function (string $step, string $phase) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch, ['state' => ['phase' => $phase]]);
@@ -532,10 +532,10 @@ it('refuses every step when the operation is in the wrong phase or belongs to an
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain("is in phase '{$phase}'");
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreStorageFixture($scratch, ['state' => ['target' => 'someone-else']]);
@@ -545,7 +545,7 @@ it('refuses every step when the operation is in the wrong phase or belongs to an
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('belongs to target someone-else');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     ['stage', 'backup-verified'],
@@ -563,20 +563,20 @@ it('extracts with --no-same-owner and --no-same-permissions, trusting nothing fr
 });
 
 it('rejects a planned target before computing any storage path', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        [$registryPath, $targetsPath] = p73Registry($scratch);
-        $env = p73BaseEnv($scratch, $registryPath, $targetsPath);
+        [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
+        $env = infraScriptEnv($scratch, $registryPath, $targetsPath);
 
-        [$exit, $output] = p73Run(p73PatchedScript($scratch, 'restore-storage'), [
+        [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'restore-storage'), [
             '--target', 'planned-target', '--operation', '20260115-120000-abc123', '--stage',
         ], $env);
 
         expect($exit)->not->toBe(0);
         expect($output)->toContain('lifecycle=planned');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 

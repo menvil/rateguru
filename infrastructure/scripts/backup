@@ -22,7 +22,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 7.1: gated test overrides for every previously-hardcoded path
+# Gated test overrides for every previously-hardcoded path
 # and binary this script touches, following the exact
 # FOO_BIN_DEFAULT/FOO_BIN + rateguru_test_overrides_allowed shape established
 # for HEALTH_CHECK_BIN in deploy/rollback. Production values are unchanged.

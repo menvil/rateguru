@@ -16,7 +16,7 @@ use Sentry\Tracing\Span;
 use Tests\TestCase;
 
 /*
- * The regression the original Phase 6 suite was missing entirely.
+ * The regression the original the observability work suite was missing entirely.
  *
  * Every earlier Sentry test configured the DSN *after* the application had
  * booted, which means the two official service providers had already decided —

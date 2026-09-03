@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 7.2: target-aware offsite backup.
+ * : target-aware offsite backup.
  *
  * These tests execute the real shipped `infrastructure/scripts/offsite-backup`
  * — never a reimplementation of its logic — against a genuine local rclone

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# install-bootstrap-services — Phase 5 slice 5.4: services and committed host
+# Install-bootstrap-services — : services and committed host
 # configuration for a prepared RateGuru host.
 #
-# Phase 5.1 defined what a valid host looks like; 5.2 installed the runtime;
+# the clean-host bootstrap.1 defined what a valid host looks like; 5.2 installed the runtime;
 # 5.3 created the identities and filesystem boundaries. This slice turns that
 # prepared host into the configured RateGuru service host required for
 # deployment: the installed operational bundle, the target perimeter, the
@@ -28,7 +28,7 @@
 #             public-storage ACL, mail capture, base services — validating
 #             every configuration family before its service is ever
 #             reloaded, and ending with the authoritative --verify report.
-#   --verify  Read-only. The authoritative slice 5.4 contract gate: exits 0
+#   --verify  Read-only. The authoritative install-bootstrap-services contract gate: exits 0
 #             only when every installed file matches its committed source,
 #             every owner/mode/symlink is exact, every required service is
 #             enabled/running, every child installer's own contract holds,
@@ -78,7 +78,7 @@
 # authorized_keys and rclone.conf are inspected by presence only. A committed
 # Nginx vhost that references missing external material fails closed with
 # `EXTERNAL PREREQUISITE MISSING` naming only the path/category. The actual
-# clean-VPS secret/DNS/TLS seeding procedure is exercised in slice 5.6.
+# Clean-VPS secret/DNS/TLS seeding procedure is exercised in the deployment acceptance.
 #
 # Application-release safety: current/previous/releases are never modified,
 # no artifact is deployed, no migration/composer/npm/asset step runs, and
@@ -144,7 +144,7 @@ SERVICE_LOG_MODE="2770"
 # Base host services this slice ensures are enabled and running. PHP-FPM is
 # appended after the template-derived service name is known. PostgreSQL and
 # Redis only get service enablement — never databases, roles, passwords,
-# pg_hba.conf or Redis auth/network changes (Phase 8 material).
+# Pg_hba.conf or Redis auth/network changes (the production launch material).
 BASE_SERVICES_STATIC=(nginx postgresql redis-server supervisor)
 
 # The Ubuntu 22.04 SSH service unit. Reloaded (never restarted) only when
@@ -288,7 +288,7 @@ section() {
 # item STATUS NAME DETAIL [ACTION]
 #
 # One report line, identical in shape to the other bootstrap installers, with
-# two slice 5.4 additions to the status vocabulary:
+# Two install-bootstrap-services additions to the status vocabulary:
 #   DRIFT     a safe regular installed file differs from its committed
 #             source (or holds the wrong owner/mode) and --apply can replace
 #             it transactionally;
@@ -349,24 +349,24 @@ All modes require root.
             not touched. Without it, this installer is exactly the host
             service bootstrap it has always been.
 
-  --check   Read-only slice 5.4 contract validation plus the intended
+  --check   Read-only install-bootstrap-services contract validation plus the intended
             --apply action for every unsatisfied item. Runs the 5.2/5.3
             prerequisite verifies, validates committed service
             configuration and the source registry, and inspects installed
             state and external prerequisites (presence only). Performs no
             mutation, no service reload/restart, no downloads.
   --apply   Validates the entire plan before the first mutation, then
-            converges the slice 5.4 service configuration in dependency
+            converges the service configuration in dependency
             order, invoking the existing child installers as authoritative
             owners, validating every configuration family before its
             service is reloaded, and ending with the full --verify report.
-  --verify  Read-only slice 5.4 contract gate: exit 0 only when installed
+  --verify  Read-only install-bootstrap-services contract gate: exit 0 only when installed
             files match committed sources, services are enabled/running,
             every child installer contract holds, and the current host
             state (PRE_DEPLOY or DEPLOYED) satisfies the contract.
 
-Service configuration scope only: packages belong to slice 5.2;
-users/groups/filesystem roots belong to slice 5.3. Application .env,
+Service configuration scope only: packages belong to install-bootstrap-runtime;
+users/groups/filesystem roots belong to install-bootstrap-host-layout. Application .env,
 authorized_keys, rclone.conf, Basic Auth and TLS material are external
 prerequisites — never created here. Only lifecycle=active targets receive
 service configuration; planned targets stay physically inactive.
@@ -400,7 +400,7 @@ require_real_directory() {
     [[ -d "${phys}" ]] || fail "path:${logical} is missing or not a directory (${why})"
 }
 
-# --- Nginx worker supplementary groups (Phase 5.6 clean-VPS blocker #2) -------
+# --- Nginx worker supplementary groups (clean-VPS blocker) ---
 #
 # Adding www-data to a target's code group in /etc/group does NOT change the
 # supplementary groups of Nginx worker processes that are already running:
@@ -513,7 +513,7 @@ template_value() {
 # CLI — never re-implemented — and only then parsed.
 load_source_contract() {
     command -v jq >/dev/null 2>&1 \
-        || fail "jq is not available — the Phase 5.2 runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
+        || fail "jq is not available — the runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
 
     [[ -r "${SOURCE_REGISTRY}" ]] \
         || fail "source registry not readable: ${SOURCE_REGISTRY}"
@@ -842,7 +842,7 @@ nginx_external_prerequisites() {
 }
 
 # all_external_prerequisites — the deduplicated CATEGORY|PATH set for every
-# Nginx vhost slice 5.4 activates: each active target's site plus the two
+# Nginx vhost install-bootstrap-services activates: each active target's site plus the two
 # shared mail-capture vhosts (whose mutating installer is only invoked after
 # these exist).
 all_external_prerequisites() {
@@ -912,7 +912,7 @@ gate_external_prerequisites() {
 }
 
 # report_secret_readiness — the external secret material the complete
-# operational system needs but slice 5.4 never creates, modifies or reads:
+# Operational system needs but install-bootstrap-services never creates, modifies or reads:
 # reported by presence only, WARN (never MISSING) when absent, because a
 # pre-deploy host legitimately lacks them and no service-config install may
 # ever rewrite them.
@@ -1369,7 +1369,7 @@ report_child_contracts() {
 
 # report_child_state NAME LABEL BIN ARGS... — a failing child contract is
 # MISSING in --check (apply converges it via the child's own --apply) and
-# CONFLICT in --verify (the slice 5.4 contract is not satisfied).
+# CONFLICT in --verify (the install-bootstrap-services contract is not satisfied).
 report_child_state() {
     local name="$1" label="$2" bin="$3"
     shift 3
@@ -1523,7 +1523,7 @@ report_services() {
 }
 
 # report_nginx_worker_groups TARGET_ID — the RUNTIME half of the code-group
-# contract. Account membership (www-data in the code group) is slice 5.3's
+# Contract. Account membership (www-data in the code group) is install-bootstrap-host-layout's
 # contract and is gated by its own --verify; this asserts that the Nginx
 # workers actually running right now carry that group, because supplementary
 # groups are fixed at process creation and a live worker that predates the
@@ -1955,7 +1955,7 @@ ensure_support_directory() {
     log_dir="$(target_log_dir "${target_id}")"
     phys="$(physical "${log_dir}")"
 
-    require_real_directory "$(dirname -- "${log_dir}")" "parent of the service-support log directory (slice 5.3 contract)"
+    require_real_directory "$(dirname -- "${log_dir}")" "parent of the service-support log directory (install-bootstrap-host-layout contract)"
 
     if ! probe="$(stat_probe "${log_dir}")"; then
         action "path:${log_dir} creating service-support log directory (${TGT_RUNTIME_USER[${target_id}]}:${TGT_RUNTIME_GROUP[${target_id}]}, mode ${SERVICE_LOG_MODE})"
@@ -2331,10 +2331,10 @@ converge_cron() {
     local target_id="$1"
 
     passwd_user_exists "${TGT_RUNTIME_USER[${target_id}]}" \
-        || fail "scheduler cron user ${TGT_RUNTIME_USER[${target_id}]} does not exist — the slice 5.3 prerequisite is incomplete"
+        || fail "scheduler cron user ${TGT_RUNTIME_USER[${target_id}]} does not exist — the install-bootstrap-host-layout prerequisite is incomplete"
 
     [[ -e "$(physical "${PHP_BIN_EXPECTED}")" ]] \
-        || fail "scheduler PHP binary ${PHP_BIN_EXPECTED} does not exist — the slice 5.2 prerequisite is incomplete"
+        || fail "scheduler PHP binary ${PHP_BIN_EXPECTED} does not exist — the install-bootstrap-runtime prerequisite is incomplete"
 
     install_managed_file_if_needed "$(src_cron "${target_id}")" "$(dst_cron "${target_id}")"
 
@@ -2448,9 +2448,9 @@ apply_gate_base_services() {
 }
 
 apply_gate_prerequisites() {
-    action "prerequisite gate: install-bootstrap-runtime --verify (slice 5.2)"
+    action "prerequisite gate: install-bootstrap-runtime --verify"
     "${RUNTIME_INSTALLER_BIN}" --verify >/dev/null 2>&1 \
-        || fail "install-bootstrap-runtime --verify failed — converge slice 5.2 first (no service/config mutation was performed)"
+        || fail "install-bootstrap-runtime --verify failed — converge install-bootstrap-runtime first (no service/config mutation was performed)"
 
     # In target mode the layout gate is asked the same question at the same
     # scope. Demanding the WHOLE host layout here would make repairing one
@@ -2461,18 +2461,18 @@ apply_gate_prerequisites() {
         "${HOSTLAYOUT_INSTALLER_BIN}" --verify --target "${TARGET_SCOPE}" >/dev/null 2>&1 \
             || fail "install-bootstrap-host-layout --verify --target ${TARGET_SCOPE} failed — converge this target's layout first (no service/config mutation was performed)"
     else
-        action "prerequisite gate: install-bootstrap-host-layout --verify (slice 5.3)"
+        action "prerequisite gate: install-bootstrap-host-layout --verify"
         "${HOSTLAYOUT_INSTALLER_BIN}" --verify >/dev/null 2>&1 \
-            || fail "install-bootstrap-host-layout --verify failed — converge slice 5.3 first (no service/config mutation was performed)"
+            || fail "install-bootstrap-host-layout --verify failed — converge install-bootstrap-host-layout first (no service/config mutation was performed)"
     fi
 }
 
 
 apply_gate_destinations() {
-    require_real_directory "${DST_NGINX_AVAILABLE_DIR}" "Nginx sites-available (installed by slice 5.2 packages)"
-    require_real_directory "${DST_NGINX_ENABLED_DIR}" "Nginx sites-enabled (installed by slice 5.2 packages)"
-    require_real_directory "${DST_PHP_FPM_POOL_DIR}" "PHP-FPM pool directory (installed by slice 5.2 packages)"
-    require_real_directory "${DST_SUPERVISOR_DIR}" "Supervisor conf.d (installed by slice 5.2 packages)"
+    require_real_directory "${DST_NGINX_AVAILABLE_DIR}" "Nginx sites-available (installed by install-bootstrap-runtime packages)"
+    require_real_directory "${DST_NGINX_ENABLED_DIR}" "Nginx sites-enabled (installed by install-bootstrap-runtime packages)"
+    require_real_directory "${DST_PHP_FPM_POOL_DIR}" "PHP-FPM pool directory (installed by install-bootstrap-runtime packages)"
+    require_real_directory "${DST_SUPERVISOR_DIR}" "Supervisor conf.d (installed by install-bootstrap-runtime packages)"
     require_real_directory "${DST_CRON_DIR}" "cron.d"
 
     local target_id logical phys
@@ -2623,7 +2623,7 @@ perform_apply() {
     if target_scoped; then
         action "apply finished — running the full verification for target ${TARGET_SCOPE}"
     else
-        action "apply finished — running the full slice 5.4 verification"
+        action "apply finished — running the full install-bootstrap-services verification"
     fi
 
     MODE=verify

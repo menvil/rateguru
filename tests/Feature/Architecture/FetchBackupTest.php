@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3: `fetch-backup` — staging ONE exact backup into a root-only
+ * Restore Target Data: `fetch-backup` — staging ONE exact backup into a root-only
  * restore operation workspace.
  *
  * These tests execute the real shipped infrastructure/scripts/fetch-backup —
@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\File;
  * gated RATEGURU_* override contract, mirroring BackupTest/RestoreTest
  * exactly. The script's own root-only `install -o root -g root` calls need
  * real root, so the full-pipeline runs use a byte-for-byte patched copy with
- * only those two flag values rewritten (p73PatchedScript).
+ * only those two flag values rewritten (patchedInfraScript).
  */
 function fetchBackupScript(): string
 {
@@ -24,14 +24,14 @@ function fetchBackupScript(): string
  */
 function fetchBackupRun(string $scratch, array $arguments, array $envOverrides = [], array $registryOptions = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch, $registryOptions);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch, $registryOptions);
 
     $backupBase = $scratch.'/backups';
     $namespaceRoot = $backupBase.'/'.($registryOptions['namespace'] ?? 'parity');
 
-    $env = p73BaseEnv($scratch, $registryPath, $targetsPath, $envOverrides);
+    $env = infraScriptEnv($scratch, $registryPath, $targetsPath, $envOverrides);
 
-    [$exit, $output] = p73Run(p73PatchedScript($scratch, 'fetch-backup'), $arguments, $env);
+    [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'fetch-backup'), $arguments, $env);
 
     return [
         'exit' => $exit,
@@ -56,10 +56,10 @@ function fetchBackupWorkspace(string $scratch, string $operationId): string
  */
 function fetchBackupRcloneStub(string $scratch): string
 {
-    return p73WriteExecutable($scratch.'/bin/rclone', <<<'BASH'
+    return writeExecutable($scratch.'/bin/rclone', <<<'BASH'
 #!/usr/bin/env bash
 set -uo pipefail
-printf '%s\n' "rclone $*" >> "${P73_RCLONE_LOG}"
+printf '%s\n' "rclone $*" >> "${RGTEST_RCLONE_LOG}"
 
 # rclone --config X copy SOURCE DEST [flags...]
 source_path=""
@@ -95,7 +95,7 @@ done
     exit 1
 }
 
-local_source="${P73_REMOTE_ROOT}/${source_path}"
+local_source="${RGTEST_REMOTE_ROOT}/${source_path}"
 
 if [[ ! -d "${local_source}" ]]; then
     printf 'ERROR: remote directory not found: %s\n' "${source_path}" >&2
@@ -111,7 +111,7 @@ BASH);
 // =============================================================================
 
 it('requires --target, --source and --backup, and offers no latest', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $missingBackup = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local']);
@@ -127,7 +127,7 @@ it('requires --target, --source and --backup, and offers no latest', function ()
         expect($missingTarget['exit'])->not->toBe(0);
         expect($missingTarget['output'])->toContain('--target is required');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -144,7 +144,7 @@ it('never accepts a filesystem path, an rclone remote, a bucket or a database na
 });
 
 it('rejects a malformed backup timestamp before touching the filesystem', function (string $backupId) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', $backupId]);
@@ -153,7 +153,7 @@ it('rejects a malformed backup timestamp before touching the filesystem', functi
         expect($result['output'])->toContain('backup ID');
         expect(is_dir($result['runRoot'].'/restores'))->toBeFalse('no workspace may be created for a malformed backup ID');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'not a timestamp' => 'latest',
@@ -173,18 +173,18 @@ it('rejects a malformed backup timestamp before touching the filesystem', functi
 // =============================================================================
 
 it('stages the exact named local backup, and only that one', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $namespaceRoot = $scratch.'/backups/parity';
-        p73BuildBackup($namespaceRoot, '20260115-120000');
-        p73BuildBackup($namespaceRoot, '20260120-120000');
+        buildBackupFixture($namespaceRoot, '20260115-120000');
+        buildBackupFixture($namespaceRoot, '20260120-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
 
         expect($result['exit'])->toBe(0, $result['output']);
 
-        $operations = p73OperationIds($result['output']);
+        $operations = operationIdsIn($result['output']);
         expect($operations)->toHaveCount(1);
 
         $staged = fetchBackupWorkspace($scratch, $operations[0]).'/selected-backup';
@@ -204,22 +204,22 @@ it('stages the exact named local backup, and only that one', function () {
 
         expect(count(array_diff(scandir($staged), ['.', '..'])))->toBe(7);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('keeps the staged backup usable after the original backup directory disappears', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $namespaceRoot = $scratch.'/backups/parity';
-        p73BuildBackup($namespaceRoot, '20260115-120000');
+        buildBackupFixture($namespaceRoot, '20260115-120000');
         $originalDump = File::get($namespaceRoot.'/20260115-120000/database.dump');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
         expect($result['exit'])->toBe(0, $result['output']);
 
-        $operations = p73OperationIds($result['output']);
+        $operations = operationIdsIn($result['output']);
         $staged = fetchBackupWorkspace($scratch, $operations[0]).'/selected-backup';
 
         // Exactly what backup's own local retention does after the emergency
@@ -237,34 +237,34 @@ it('keeps the staged backup usable after the original backup directory disappear
         exec('cd '.escapeshellarg($staged).' && sha256sum --check SHA256SUMS 2>&1', $out, $exit);
         expect($exit)->toBe(0, implode("\n", $out));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a backup that does not exist in the target namespace', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
-        p73BuildBackup($scratch.'/backups/other', '20260101-000000');
+        buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/other', '20260101-000000');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260101-000000']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('does not exist in namespace parity');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a symlinked backup namespace root and a symlinked backup directory', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         // A symlinked timestamp directory pointing at a real backup elsewhere.
         $namespaceRoot = $scratch.'/backups/parity';
         mkdir($namespaceRoot, 0o755, true);
-        p73BuildBackup($scratch.'/elsewhere', '20260115-120000');
+        buildBackupFixture($scratch.'/elsewhere', '20260115-120000');
         symlink($scratch.'/elsewhere/20260115-120000', $namespaceRoot.'/20260115-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
@@ -272,15 +272,15 @@ it('refuses a symlinked backup namespace root and a symlinked backup directory',
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('backup directory must not be a symlink');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         // A symlinked namespace root pointing at a directory of real backups.
         mkdir($scratch.'/backups', 0o755, true);
-        p73BuildBackup($scratch.'/elsewhere-ns', '20260115-120000');
+        buildBackupFixture($scratch.'/elsewhere-ns', '20260115-120000');
         symlink($scratch.'/elsewhere-ns', $scratch.'/backups/parity');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
@@ -288,15 +288,15 @@ it('refuses a symlinked backup namespace root and a symlinked backup directory',
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('backup namespace root must not be a symlink');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a backup whose required entry is a symlink rather than a regular file', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $dir = p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        $dir = buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
         unlink($dir.'/database.dump');
         symlink('/etc/hosts', $dir.'/database.dump');
 
@@ -305,15 +305,15 @@ it('refuses a backup whose required entry is a symlink rather than a regular fil
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('backup file must not be a symlink: database.dump');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a backup directory missing one of the seven required files', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        $dir = p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        $dir = buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
         unlink($dir.'/server-configuration.tar.gz');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
@@ -321,7 +321,7 @@ it('refuses a backup directory missing one of the seven required files', functio
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('backup is missing a required file: server-configuration.tar.gz');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -330,20 +330,20 @@ it('refuses a backup directory missing one of the seven required files', functio
 // =============================================================================
 
 it('downloads exactly one backup from the fixed remote and bucket for the registry namespace', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         fetchBackupRcloneStub($scratch);
 
         // Two remote backups; only the named one may be downloaded.
-        p73BuildBackup($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
-        p73BuildBackup($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260120-120000');
+        buildBackupFixture($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260120-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'offsite', '--backup', '20260115-120000'], [
             'RATEGURU_RCLONE_BIN' => $scratch.'/bin/rclone',
-            'RATEGURU_RCLONE_CONFIG' => p73WriteExecutable($scratch.'/rclone.conf', "[rateguru-b2]\ntype = b2\n"),
-            'P73_RCLONE_LOG' => $scratch.'/rclone.log',
-            'P73_REMOTE_ROOT' => $scratch.'/remote',
+            'RATEGURU_RCLONE_CONFIG' => writeExecutable($scratch.'/rclone.conf', "[rateguru-b2]\ntype = b2\n"),
+            'RGTEST_RCLONE_LOG' => $scratch.'/rclone.log',
+            'RGTEST_REMOTE_ROOT' => $scratch.'/remote',
         ]);
 
         expect($result['exit'])->toBe(0, $result['output']);
@@ -353,45 +353,45 @@ it('downloads exactly one backup from the fixed remote and bucket for the regist
         expect($log)->not->toContain('20260120-120000');
         expect(substr_count($log, 'copy'))->toBe(1);
 
-        $operations = p73OperationIds($result['output']);
+        $operations = operationIdsIn($result['output']);
         $staged = fetchBackupWorkspace($scratch, $operations[0]).'/selected-backup';
         expect(is_file($staged.'/manifest.json'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('fails closed when the offsite backup is incomplete', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         fetchBackupRcloneStub($scratch);
 
         $remote = $scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity';
-        $dir = p73BuildBackup($remote, '20260115-120000');
+        $dir = buildBackupFixture($remote, '20260115-120000');
         unlink($dir.'/release.json');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'offsite', '--backup', '20260115-120000'], [
             'RATEGURU_RCLONE_BIN' => $scratch.'/bin/rclone',
-            'RATEGURU_RCLONE_CONFIG' => p73WriteExecutable($scratch.'/rclone.conf', "[rateguru-b2]\n"),
-            'P73_RCLONE_LOG' => $scratch.'/rclone.log',
-            'P73_REMOTE_ROOT' => $scratch.'/remote',
+            'RATEGURU_RCLONE_CONFIG' => writeExecutable($scratch.'/rclone.conf', "[rateguru-b2]\n"),
+            'RGTEST_RCLONE_LOG' => $scratch.'/rclone.log',
+            'RGTEST_REMOTE_ROOT' => $scratch.'/remote',
         ]);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('release.json');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('never logs a credential, an rclone config body or an environment value', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         fetchBackupRcloneStub($scratch);
 
-        p73BuildBackup($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
 
         $config = $scratch.'/rclone.conf';
         file_put_contents($config, "[rateguru-b2]\ntype = b2\naccount = SUPER-SECRET-ACCOUNT\nkey = SUPER-SECRET-KEY\n");
@@ -399,8 +399,8 @@ it('never logs a credential, an rclone config body or an environment value', fun
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'offsite', '--backup', '20260115-120000'], [
             'RATEGURU_RCLONE_BIN' => $scratch.'/bin/rclone',
             'RATEGURU_RCLONE_CONFIG' => $config,
-            'P73_RCLONE_LOG' => $scratch.'/rclone.log',
-            'P73_REMOTE_ROOT' => $scratch.'/remote',
+            'RGTEST_RCLONE_LOG' => $scratch.'/rclone.log',
+            'RGTEST_REMOTE_ROOT' => $scratch.'/remote',
         ]);
 
         expect($result['exit'])->toBe(0, $result['output']);
@@ -409,7 +409,7 @@ it('never logs a credential, an rclone config body or an environment value', fun
             ->not->toContain('SUPER-SECRET-KEY')
             ->not->toContain('from-backup-never-applied');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -418,15 +418,15 @@ it('never logs a credential, an rclone config body or an environment value', fun
 // =============================================================================
 
 it('creates a root-only workspace under the fixed restore run root and nowhere else', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
         expect($result['exit'])->toBe(0, $result['output']);
 
-        $operations = p73OperationIds($result['output']);
+        $operations = operationIdsIn($result['output']);
         $workspace = fetchBackupWorkspace($scratch, $operations[0]);
 
         expect(is_dir($workspace))->toBeTrue();
@@ -437,15 +437,15 @@ it('creates a root-only workspace under the fixed restore run root and nowhere e
         // directory was created anywhere in the scratch tree.
         expect($workspace)->toBe($scratch.'/run/restores/parity-target/'.$operations[0]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects an operation ID that is not the closed generated format', function (string $operationId) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
 
         $result = fetchBackupRun($scratch, [
             '--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000',
@@ -455,7 +455,7 @@ it('rejects an operation ID that is not the closed generated format', function (
         expect($result['exit'])->not->toBe(0, "expected {$operationId} to be rejected");
         expect($result['output'])->toContain('invalid restore operation ID');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'path traversal' => '../../etc',
@@ -468,15 +468,15 @@ it('rejects an operation ID that is not the closed generated format', function (
 ]);
 
 it('refuses to stage into a workspace that already holds a staged backup', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
 
         $first = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
         expect($first['exit'])->toBe(0, $first['output']);
 
-        $operation = p73OperationIds($first['output'])[0];
+        $operation = operationIdsIn($first['output'])[0];
 
         $second = fetchBackupRun($scratch, [
             '--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000',
@@ -486,7 +486,7 @@ it('refuses to stage into a workspace that already holds a staged backup', funct
         expect($second['exit'])->not->toBe(0);
         expect($second['output'])->toContain('a backup is already staged in this operation workspace');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -495,15 +495,15 @@ it('refuses to stage into a workspace that already holds a staged backup', funct
 // =============================================================================
 
 it('discards a fetch-only workspace, and refuses to discard a restore-target operation', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73BuildBackup($scratch.'/backups/parity', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/parity', '20260115-120000');
 
         $fetch = fetchBackupRun($scratch, ['--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000']);
         expect($fetch['exit'])->toBe(0, $fetch['output']);
 
-        $operation = p73OperationIds($fetch['output'])[0];
+        $operation = operationIdsIn($fetch['output'])[0];
         $workspace = fetchBackupWorkspace($scratch, $operation);
         expect(is_dir($workspace))->toBeTrue();
 
@@ -525,7 +525,7 @@ it('discards a fetch-only workspace, and refuses to discard a restore-target ope
         // The backup itself is untouched.
         expect(is_dir($scratch.'/backups/parity/20260115-120000'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -534,17 +534,17 @@ it('discards a fetch-only workspace, and refuses to discard a restore-target ope
 // =============================================================================
 
 it('rejects a planned target before creating a workspace, reading a backup root or downloading anything', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         fetchBackupRcloneStub($scratch);
-        p73BuildBackup($scratch.'/backups/planned', '20260115-120000');
+        buildBackupFixture($scratch.'/backups/planned', '20260115-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'planned-target', '--source', 'offsite', '--backup', '20260115-120000'], [
             'RATEGURU_RCLONE_BIN' => $scratch.'/bin/rclone',
-            'RATEGURU_RCLONE_CONFIG' => p73WriteExecutable($scratch.'/rclone.conf', "[rateguru-b2]\n"),
-            'P73_RCLONE_LOG' => $scratch.'/rclone.log',
-            'P73_REMOTE_ROOT' => $scratch.'/remote',
+            'RATEGURU_RCLONE_CONFIG' => writeExecutable($scratch.'/rclone.conf', "[rateguru-b2]\n"),
+            'RGTEST_RCLONE_LOG' => $scratch.'/rclone.log',
+            'RGTEST_REMOTE_ROOT' => $scratch.'/remote',
         ]);
 
         expect($result['exit'])->not->toBe(0);
@@ -552,7 +552,7 @@ it('rejects a planned target before creating a workspace, reading a backup root 
         expect(is_dir($scratch.'/run/restores'))->toBeFalse('no workspace may exist for a planned target');
         expect(file_exists($scratch.'/rclone.log'))->toBeFalse('a planned target must never reach rclone');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 

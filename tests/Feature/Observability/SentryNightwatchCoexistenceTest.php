@@ -12,7 +12,7 @@ use Sentry\State\HubInterface;
 use Tests\TestCase;
 
 /**
- * Phase 6B: Sentry and Nightwatch in the same application.
+ * the Nightwatch evaluation: Sentry and Nightwatch in the same application.
  *
  * Two vendors, two official integrations, no shared abstraction, and both
  * enabled at once — which is the configuration staging will actually run
@@ -52,7 +52,7 @@ it('boots and serves a normal request with both products enabled', function () {
     $this->get('/')->assertSuccessful();
 });
 
-it('leaves the Sentry integration exactly as Phase 6A configured it', function () {
+it('leaves the Sentry integration exactly as the Sentry integration configured it', function () {
     // Frozen for the duration of the comparison: if adding a second vendor
     // moved any of this, the comparison would be measuring the change instead
     // of the products.
@@ -108,7 +108,7 @@ it('reports one exception once to each provider, and never twice to either', fun
 });
 
 it('introduces no second exception-capture path', function () {
-    // Phase 6A's rule, unchanged: bootstrap/app.php's `Integration::handles()`
+    // the Sentry integration's rule, unchanged: bootstrap/app.php's `Integration::handles()`
     // is the whole Sentry capture path, and Nightwatch hooks Laravel's handler
     // itself. Neither vendor is invoked manually from application code.
     $offenders = [];

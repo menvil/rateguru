@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# install-target-database — Phase 7.2B: create and verify ONE target's
+# Install-target-database — Prepare Host: create and verify ONE target's
 # PostgreSQL role and database, and nothing else.
 #
-# The clean-host gap this closes. Phase 5 host bootstrap deliberately installs
+# The clean-host gap this closes. the clean-host bootstrap host bootstrap deliberately installs
 # PostgreSQL but never creates a target's role or database: the credentials for
 # them live in the target's own shared/.env, which is external secret material
 # no installer may invent. That left exactly one manual step between "bootstrap
@@ -37,7 +37,7 @@
 #
 # When an existing role or database cannot be proven to match the intended
 # configuration, this script FAILS CLOSED and reports the mismatch. Reconciling
-# genuine drift is Repair Target (Phase 7.5) and credential rotation is its own
+# Genuine drift is Repair Target and credential rotation is its own
 # future operation; neither is smuggled in here.
 #
 # Credentials come from the target's shared/.env, parsed by a deliberately

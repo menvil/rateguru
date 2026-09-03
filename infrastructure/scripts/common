@@ -242,7 +242,7 @@ validate_backup_manifest() {
 
 # --- deployment target registry (begin) ---
 #
-# Phase 4 slice 1: read-only accessors over the non-secret target registry.
+# Read-only accessors over the non-secret target registry.
 #
 # Nothing below runs at source time. The registry is read only when a target_*
 # helper is actually called, so scripts installed before the registry exists —
@@ -525,7 +525,7 @@ target_supervisor_program()       { _target_property "${1-}" '.supervisor.progra
 target_queue_name()               { _target_property "${1-}" '.supervisor.queue' string; }
 target_scheduler_name()           { _target_property "${1-}" '.scheduler.name' string; }
 target_nginx_site_name()          { _target_property "${1-}" '.nginx.site_name' string; }
-# Phase 4 slice 5: the first public_hostnames entry is the target's canonical
+# The first public_hostnames entry is the target's canonical
 # public hostname, used by deploy for `artisan rateguru:sharing:verify
 # --expected-host`. No new registry field: _target_property's existing
 # generic contract already fails closed here for free — `.public_hostnames[0]`
@@ -534,11 +534,11 @@ target_nginx_site_name()          { _target_property "${1-}" '.nginx.site_name' 
 # into "target X is missing a valid .public_hostnames[0] (expected string)".
 target_primary_public_hostname()  { _target_property "${1-}" '.public_hostnames[0]' string; }
 
-# Phase 6B: the Supervisor program running this target's Laravel Nightwatch
+# The Supervisor program running this target's Laravel Nightwatch
 # agent, or a non-zero return when the target does not run one.
 #
 # Deliberately a closed allowlist here rather than a registry field. Nightwatch
-# is a time-boxed evaluation that Phase 6C may reject outright, and a required
+# Is a time-boxed evaluation that the Nightwatch decision may reject outright, and a required
 # registry field would make every target — including the planned production
 # ones — carry a key for a product that may not survive, ripple through
 # targets' REQUIRED_STRINGS and every registry fixture the test suite embeds,
@@ -560,7 +560,7 @@ target_nightwatch_program() {
     esac
 }
 
-# Phase 4 slice 2: the single gate operational commands use before acting on a
+# The single gate operational commands use before acting on a
 # target. target_lifecycle already validates the target ID, validates the
 # whole registry, and confirms the target exists (failing "unknown target: …"
 # otherwise) — so this only adds the final check: the target must be
@@ -668,7 +668,7 @@ USAGE
 
     [[ "${TARGET_SEEN}" == true ]] || fail "--target is required"
 }
-# --- restore guard (Phase 7.3) ------------------------------------------------
+# --- restore guard -----------------------------------------------------------
 #
 # A restore that lands data from backup A onto a target whose `current` still
 # serves code B finishes in a deliberate HELD state: the data is restored, but
@@ -741,7 +741,7 @@ assert_no_restore_hold() {
     fail "${target_id} is held after restore operation ${held_operation} (status ${held_status}): its live data may be from a backup taken under ${held_sha}, which is not what current serves, so ${operation} is refused — a backup would record the wrong source_sha for this data, and a deployment, rollback or cleanup would move the code further away from it or delete the release it needs. Controlled code alignment is required, and it is the ONLY thing that may end this hold. Do NOT use the normal deployment path: run the Restore workflow for this target with mode=continue-held and operation=${held_operation}, or, by hand, deploy the required source SHA with 'deploy --target ${target_id} --restore-operation ${held_operation}' and finish with 'restore-target --resume'. The guard is ${marker}"
 }
 
-# --- restore alignment authorization (Phase 7.4) ------------------------------
+# --- restore alignment authorization -----------------------------------------
 #
 # The hold above has exactly one legitimate ending: a controlled deployment of
 # the exact commit the restored data belongs to, followed by

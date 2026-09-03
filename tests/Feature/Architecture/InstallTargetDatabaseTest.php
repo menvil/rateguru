@@ -3,8 +3,8 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.2B: infrastructure/scripts/install-target-database — the smallest
- * primitive that closes the clean-host gap Phase 5 deliberately left open, and
+ * Prepare Host: infrastructure/scripts/install-target-database — the smallest
+ * primitive that closes the clean-host gap the clean-host bootstrap deliberately left open, and
  * the one whose safety rules matter most, because it is the only part of
  * preparation that can touch a live database.
  *

@@ -4,7 +4,7 @@ use Laravel\Nightwatch\Core;
 use Laravel\Nightwatch\Facades\Nightwatch;
 
 /**
- * Phase 6B: the configuration boundary RateGuru owns.
+ * the Nightwatch evaluation: the configuration boundary RateGuru owns.
  *
  * These assert RateGuru's decisions, never the package's behaviour — the
  * vendor is responsible for what it does with a sample rate, we are
@@ -162,7 +162,7 @@ it('leaves mail and notifications off, because both records identify a recipient
 it('keeps the Nightwatch log channel out of the log stack', function () {
     // The package registers a `nightwatch` logging channel whether or not
     // anyone uses it. What decides whether log records are shipped is the
-    // stack, and Phase 6B deliberately leaves it alone: RateGuru's redaction
+    // stack, and the Nightwatch evaluation deliberately leaves it alone: RateGuru's redaction
     // covers DomainLogger, not the direct Log:: calls scattered through the
     // console commands.
     expect(config('logging.default'))->not->toBe('nightwatch');

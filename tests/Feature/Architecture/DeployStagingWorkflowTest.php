@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The staging deployment workflow after Phase 7.1: manual-only, staging
+ * The staging deployment workflow after the shared operation actions: manual-only, staging
  * source/release policy of its own, and nothing else — every mechanical build
  * step now lives in the shared .github/actions/build-rateguru action
  * (BuildRateGuruActionTest owns that contract).
@@ -153,7 +153,7 @@ it('has no dead workflow_run auto-deploy path left anywhere', function () {
 });
 
 it('never rebuilds the mechanical pipeline that now belongs to the shared build action', function () {
-    // Exactly the duplication Phase 7.1 removed: if any of these reappears
+    // Exactly the duplication the shared operation actions removed: if any of these reappears
     // here, deploy-staging.yml has started forking the build again.
     foreach ([
         'composer install',
