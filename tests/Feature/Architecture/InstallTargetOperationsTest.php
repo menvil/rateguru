@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * the target-aware migration slice 2b: transactional installation and real-VPS parity
+ * Transactional installation of the operational bundle, and real-VPS parity
  * verification for the read-only target operations.
  *
  * These tests exercise the real shipped installer — never a reimplementation

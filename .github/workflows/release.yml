@@ -263,7 +263,7 @@ jobs:
           path: ${{ runner.temp }}/rateguru-production-release
 
       # tits-guru intentionally remains lifecycle=planned and unprovisioned —
-      # activation is explicitly out of scope for this the target-aware migration cutover. This
+      # activation is explicitly out of scope for this cutover. This
       # job is pinned to its real target ID so it fails closed, before
       # touching anything, until the target is provisioned and activated in
       # a later phase. Routing production to staging-main or activating

@@ -3,15 +3,16 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Restore Target Data's own scope guard: what this phase establishes, and — more
+ * Restore Target Data's own scope guard: what it establishes, and — more
  * importantly — everything it deliberately does not begin.
  *
- * 7.3 ends when a live target's DATA can be restored from one exact,
+ * It ends when a live target's DATA can be restored from one exact,
  * fully-verified backup, safely, with an emergency backup taken first and a
- * compensating undo for every live step. The GitHub-facing restore surface is
- * 7.4, Repair Target is 7.5, Recover Host is 7.6/7.7, the rejected durable
- * artifact archive stays rejected, the accepted backup subsystem is untouched,
- * and production stays unprovisioned until the production launch.
+ * compensating undo for every live step. The GitHub-facing restore surface,
+ * Repair Target and Recover Host are each their own operation with their own
+ * guard, the rejected durable artifact archive stays rejected, the accepted
+ * backup subsystem is untouched, and production stays unprovisioned until the
+ * production launch.
  */
 
 /** The five restore CLIs and the one restore-only library this phase adds. */
@@ -58,7 +59,7 @@ it('keeps one implementation of each restore concern rather than five copies', f
     // restore-common, once each.
     //
     // validate_operation_id is deliberately NOT in this list any more. Phase
-    // 7.4 moved it (and the two identifier FORMATS) up into `common`, because
+    // The GitHub restore surface moved it (and the two identifier FORMATS) up into `common`, because
     // `deploy` has to validate the same operation ID and must not source the
     // restore library. It is still exactly one implementation — asserted
     // below — and every restore primitive still calls that one.
@@ -138,7 +139,7 @@ it('installs every new primitive through the existing target-operations installe
 // The GitHub restore surface belongs to the controlled code alignment, and only to it
 // =============================================================================
 //
-// 7.3 was entirely server-side. 7.4 added the GitHub layer, and its exact
+// The restore primitives are entirely server-side. The GitHub layer's exact
 // inventory is RestoreOperatorSurfaceScopeTest's business. What stays 7.3's business is the
 // boundary between them: the GitHub layer may DRIVE restore-target through the
 // generic wrapper, and may drive nothing else.
@@ -445,7 +446,7 @@ it('never switches a release, and never touches the current or previous link', f
 it('confines every restore concern in the shared library to its own sections', function () {
     // `common` is sourced by every operational script, so a change to it
     // reaches deploy, rollback, cleanup and backup at once. Two phases have
-    // added to it — 7.3 the guard, 7.4 the alignment authorization — and both
+    // added to it — the guard, and the alignment authorization — and both
     // additions must stay inside their own delimited sections rather than
     // reaching into anything that was already there.
     $diff = branchFileDiff('infrastructure/scripts/common');
@@ -475,7 +476,7 @@ it('confines every restore concern in the shared library to its own sections', f
     }
 
     // And so does every line it removed — measured against the version it was
-    // removed from. A restore phase may rewrite its OWN text (7.4 had to: the
+    // removed from. A restore change may rewrite its OWN text (the alignment work had to: the
     // hold refusal used to say controlled alignment did not exist yet), but it
     // may never touch a line of anything that was already in common.
     $base = baseRevisionFile('infrastructure/scripts/common');
@@ -518,7 +519,7 @@ it('confines every restore concern in the shared library to its own sections', f
 it('does not weaken deploy, rollback, cleanup or any earlier phase contract', function () {
     $changed = branchChangedCodeFiles();
 
-    // Files no phase after 7.3 has any business touching to build a restore
+    // Files nothing built on the restore primitives has any business touching to build a restore
     // surface. deploy/rollback/cleanup are deliberately NOT in this list any
     // more: the controlled code alignment gives each of them a fail-closed refusal while a restore
     // guard exists, and gives deploy its controlled-alignment mode — both of

@@ -121,7 +121,7 @@
 # redis-server starts bound to localhost; php8.5-fpm starts with the
 # distribution "www" pool; supervisor starts with an empty conf.d. None of
 # that is RateGuru configuration: vhosts, pools, workers, databases, roles,
-# users, directories and TLS all belong to slices 5.3/5.4 and are never
+# users, directories and TLS all belong to the later installers and are never
 # created here. This slice also never enables/disables/starts/stops any
 # service itself and never edits pg_hba.conf or any service configuration.
 #
@@ -217,7 +217,7 @@ RCLONE_SIGNING_KEY_FILE_DEFAULT="${REPO_ROOT}/infrastructure/config/external-run
 
 # --- Required package contract ----------------------------------------------
 
-# The smallest Ubuntu 22.04 package set supplying the clean-host bootstrap.1 canonical
+# The smallest Ubuntu 22.04 package set supplying the clean-host bootstrap's canonical
 # tool inventory (REQUIRED_BASE_TOOLS + RUNTIME_SERVICE_TOOLS in
 # bootstrap-host-preflight) plus the runtime services and certbot tooling.
 # rclone is deliberately NOT here: it is a managed external runtime binary
@@ -967,9 +967,9 @@ report_summary() {
     printf '\n'
 
     if contract_satisfied; then
-        printf 'SLICE 5.2 CONTRACT: SATISFIED\n'
+        printf 'HOST RUNTIME CONTRACT: SATISFIED\n'
     else
-        printf 'SLICE 5.2 CONTRACT: NOT SATISFIED\n'
+        printf 'HOST RUNTIME CONTRACT: NOT SATISFIED\n'
     fi
 }
 

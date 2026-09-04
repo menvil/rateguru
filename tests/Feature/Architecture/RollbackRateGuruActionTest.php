@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The one canonical GitHub-side rollback implementation (the shared operation actions, Part D).
+ * The one canonical GitHub-side rollback implementation, shared by both environments.
  *
  * Transport and orchestration only: every rollback safety rule — deployment
  * lock, target lifecycle, release path validation, the atomic current/previous

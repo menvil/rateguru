@@ -738,8 +738,8 @@ install_row() {
         #
         # Target-scope destinations are different: their parents belong to
         # RateGuru identities that install-bootstrap-host-layout creates with specific ownership and
-        # setgid modes. Creating one here would produce a directory 5.3 then has
-        # to disagree with, so this fails closed instead.
+        # setgid modes. Creating one here would produce a directory that
+        # installer would then have to disagree with, so this fails closed instead.
         if [[ "${scope}" != host ]]; then
             fail "cannot install ${destination}: ${dst_dir} does not exist — its owner is created by host bootstrap; run prepare-host --apply, which orders this correctly"
         fi

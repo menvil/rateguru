@@ -3,7 +3,7 @@
 # Install-bootstrap-host-layout — : users, groups and
 # filesystem bootstrap for a clean RateGuru host.
 #
-# Modes (all root-only — this slice manages host identities and root-owned
+# Modes (all root-only — this installer manages host identities and root-owned
 # directory trees, and even its read-only inspection must see them exactly
 # as the mutating path would):
 #   --check   Strictly read-only. Validates the source registry, the
@@ -471,7 +471,7 @@ declare -A TGT_CODE_GROUP TGT_INCOMING TGT_DEPLOY_HOME
 
 # load_source_contract — fail-closed source-of-truth loading. This installer
 # Runs strictly after install-bootstrap-runtime, so jq and the targets CLI are hard
-# prerequisites (their absence is a clear 5.2-incomplete error, never a
+# prerequisites (their absence means install-bootstrap-runtime has not run, never a
 # degraded report). The registry is validated through the standalone
 # `targets` CLI — never re-implemented — and only then parsed.
 load_source_contract() {
@@ -904,13 +904,13 @@ report_summary() {
         if target_scoped; then
             printf 'HOST LAYOUT CONTRACT (%s): SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.3 CONTRACT: SATISFIED\n'
+            printf 'HOST LAYOUT CONTRACT: SATISFIED\n'
         fi
     else
         if target_scoped; then
             printf 'HOST LAYOUT CONTRACT (%s): NOT SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.3 CONTRACT: NOT SATISFIED\n'
+            printf 'HOST LAYOUT CONTRACT: NOT SATISFIED\n'
         fi
     fi
 }

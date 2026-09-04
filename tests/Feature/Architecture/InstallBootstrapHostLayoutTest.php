@@ -638,7 +638,7 @@ it('recognizes the compliant staging host as satisfied and reports the planned t
         [$exit, $output] = hostLayoutRun(['--check'], $env);
 
         expect($exit)->toBe(0, "a compliant host must satisfy --check:\n{$output}");
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
         expect($output)->toContain('PASS     registry:source — valid (1 active target(s): staging-main)');
         expect($output)->toContain('PASS     target:staging-main — lifecycle=active');
         expect($output)->toContain('PASS     target:tits-guru — lifecycle=planned — not provisioned by this slice');
@@ -673,7 +673,7 @@ it('reports the full work list on a clean Phase-5.2-compliant host and exits non
         [$exit, $output] = hostLayoutRun(['--check'], $env);
 
         expect($exit)->toBe(1, "a clean host cannot satisfy the install-bootstrap-host-layout contract:\n{$output}");
-        expect($output)->toContain('SLICE 5.3 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: NOT SATISFIED');
 
         // Prerequisites are present (5.2 completed); identities and the
         // filesystem are the work list.
@@ -874,7 +874,7 @@ it('bootstraps a clean host: groups, users, membership and the full tree in depe
 
         expect($exit)->toBe(0, "clean-host apply must converge and verify:\n{$output}");
         expect($output)->toContain('APPLY    validating the entire plan before any mutation');
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
 
         // Identity dependency order: all groups strictly before users,
         // users before the membership append.
@@ -962,7 +962,7 @@ it('remediates the real staging target-root drift — deploy:code 2750 — to ex
         expect($exit)->toBe(0, "the drift remediation must converge and pass its own closing verify:\n{$output}");
         expect($output)->toContain('APPLY    path:/home/www/rateguru/staging reconciling ownership deploy-rateguru-staging:rateguru-staging-code -> root:root (this directory entry only, never recursive)');
         expect($output)->toContain('APPLY    path:/home/www/rateguru/staging reconciling mode 2750 -> 0755 (this directory entry only, never recursive)');
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
 
         // Exactly one chown and one complete-mode-replacing chmod, of
         // exactly the drifted entry; nothing else ran. The `=` operator
@@ -1076,7 +1076,7 @@ it('creates exact-mode directories even beneath a setgid parent: the contract, n
         [$exit, $output] = hostLayoutRun(['--apply'], $env);
 
         expect($exit)->toBe(0, "clean-host apply beneath a setgid parent must converge:\n{$output}");
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
 
         // Every created directory ends with its exact contract mode — a
         // plain 0755 child under the setgid parent must be 0755, not 2755,
@@ -1114,7 +1114,7 @@ it('is idempotent: a second --apply performs zero mutation of any kind', functio
         [$secondExit, $output] = hostLayoutRun(['--apply'], $env);
 
         expect($secondExit)->toBe(0, "a second apply on a compliant host must verify clean:\n{$output}");
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
 
         foreach (['identity.log', 'install.log', 'chown.log', 'chmod.log'] as $log) {
             expect(hostLayoutLog($scratch, $log))->toBe('', "second apply invoked a mutation tool ({$log})");
@@ -1446,7 +1446,7 @@ it('enforces the non-login runtime shell while keeping the runtime home out of t
         [$verifyExit, $verifyOutput] = hostLayoutRun(['--verify'], $env);
 
         expect($verifyExit)->toBe(0, "a divergent runtime home alone must not fail --verify:\n{$verifyOutput}");
-        expect($verifyOutput)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($verifyOutput)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
         expect($verifyOutput)->toContain('PASS     user:rateguru-staging — exists (primary group rateguru-staging, shell /usr/sbin/nologin');
     } finally {
         hostLayoutCleanup($scratch);
@@ -1494,7 +1494,7 @@ it('verifies the compliant host without printing apply hints', function () {
         [$exit, $output] = hostLayoutRun(['--verify'], $env);
 
         expect($exit)->toBe(0, $output);
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
         expect($output)->not->toContain('-> apply:');
     } finally {
         hostLayoutCleanup($scratch);
@@ -1639,7 +1639,7 @@ it('keeps the roadmap structure: the clean-host bootstrap completed, the observa
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)->toMatch('/^\|\s*6\s*\|[^|]+\|\s*🚧 current\s*\|$/m');
 
-    // Phases 7-10 stay planned in the summary table.
+    // Phases 7-10 stay planned in the roadmap summary table.
     foreach ([7, 8, 9, 10] as $phase) {
         expect($roadmap)->toMatch(
             '/^\|\s*'.$phase.'\s*\|[^|]+\|\s*⏳ planned[^|]*\|$/m',
@@ -1768,7 +1768,7 @@ it('--verify fails when the runtime user is in the code group but www-data is no
         expect($exit)->toBe(1, 'a host Nginx cannot serve from must not verify');
         expect($output)->toContain('PASS     membership:rateguru-staging:rateguru-staging-code');
         expect($output)->toContain('MISSING  membership:www-data:rateguru-staging-code');
-        expect($output)->toContain('SLICE 5.3 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: NOT SATISFIED');
     } finally {
         hostLayoutCleanup($scratch);
     }
@@ -1843,7 +1843,7 @@ it('leaves host mode exactly as it was: no --target, no target vocabulary anywhe
         expect($exit)->toBe(0, "host mode must still verify the compliant fixture clean:\n{$output}");
 
         // The host-mode header, summary and verdict are unchanged.
-        expect($output)->toContain('SLICE 5.3 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST LAYOUT CONTRACT: SATISFIED');
         expect($output)->toContain('Bootstrap host layout installer (check):');
 
         // Every host root is still an item this run owns, reported under

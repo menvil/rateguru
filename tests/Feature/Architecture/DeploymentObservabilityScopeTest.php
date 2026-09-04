@@ -4,14 +4,14 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Prepare Host's own scope guard: what this phase establishes, and — more
- * importantly — the four later phases it deliberately does not begin.
+ * Prepare Host's own scope guard: what it establishes, and — more importantly —
+ * the four neighbouring operations it deliberately does not begin.
  *
- * 7.2 ends when a clean VPS can be PREPARED and a successful deployment state
- * transition is visible in both observability systems. Restore (7.3), Repair
- * (7.5) and Recover (7.6) come after it, the rejected durable-artifact archive
- * stays rejected, the backup architecture is untouched, and production stays
- * unprovisioned until the production launch.
+ * It ends when a clean VPS can be PREPARED and a successful deployment state
+ * transition is visible in both observability systems. Restore Target Data,
+ * Repair Target and Recover Host come after it, the rejected durable-artifact
+ * archive stays rejected, the backup architecture is untouched, and production
+ * stays unprovisioned until the production launch.
  */
 
 // =============================================================================
@@ -22,7 +22,7 @@ it('adds exactly the operator-facing workflows Prepare Host is meant to add', fu
     // The workflows Prepare Host established, all of which must still exist and
     // still be the ONLY ones covering their operation. This is deliberately a
     // containment check rather than an exact inventory: later phases add
-    // operator workflows of their own (7.4 added the two restore ones), and
+    // operator workflows of their own (the restore surface added two), and
     // each phase's guard owns the exact inventory as of itself —
     // RestoreOperatorSurfaceScopeTest is the current one.
     $workflows = collect(glob(base_path('.github/workflows/*.yml')) ?: [])
@@ -45,7 +45,7 @@ it('adds exactly the operator-facing workflows Prepare Host is meant to add', fu
         expect($workflows)->toContain($workflow);
     }
 
-    // What 7.2 rejected, and every later phase inherits: one generic
+    // What host preparation rejected, and everything after it inherits: one generic
     // "Operations" workflow, and per-environment duplicates of an operation
     // that already has a shared implementation.
     foreach ([
@@ -59,7 +59,7 @@ it('adds exactly the operator-facing workflows Prepare Host is meant to add', fu
 });
 
 it('adds exactly the shared actions Prepare Host is meant to add', function () {
-    // Containment, for the same reason as the workflow inventory above: 7.4
+    // Containment, for the same reason as the workflow inventory above: the
     // added restore-rateguru, and RestoreOperatorSurfaceScopeTest owns the exact list.
     $actions = collect(glob(base_path('.github/actions/*'), GLOB_ONLYDIR) ?: [])
         ->map(static fn (string $path): string => basename($path))
@@ -109,12 +109,12 @@ it('keeps one implementation per operation', function () {
 it('implements no Restore operation', function () {
     // restore-test remains what it has always been: a read-only proof that a
     // backup can be restored into a throwaway scratch database. Turning it
-    // into a live restore was Restore Target Data, and nothing 7.2 added does it.
+    // into a live restore was Restore Target Data, and nothing here does it.
     //
     // Restore Target Data landed the SERVER primitives (restore-target and friends) and
     // the controlled code alignment the GitHub-facing surface; each owns its own scope guard
     // (RestoreServerPrimitivesScopeTest, RestoreOperatorSurfaceScopeTest). What this test still owns is 7.2's
-    // own promise: nothing 7.2 added restores anything, and no restore
+    // own promise: nothing host preparation added restores anything, and no restore
     // implementation ever appeared under a name outside those phases.
     expect(File::exists(base_path('infrastructure/scripts/restore-test')))->toBeTrue();
 
@@ -128,7 +128,7 @@ it('implements no Restore operation', function () {
         expect(File::exists(base_path($path)))->toBeFalse("{$path} is not part of any phase's restore design");
     }
 
-    // And nothing added in 7.2 restores anything.
+    // And nothing host preparation added restores anything.
     foreach ([
         'infrastructure/scripts/prepare-host',
         'infrastructure/scripts/install-target-prerequisites',

@@ -22,7 +22,7 @@ use Symfony\Component\Yaml\Yaml;
  * repositories configured by the operator, unrelated NodeSource/ClickHouse/
  * Datadog sources on the side — recognized, satisfied, and never touched).
  *
- * rclone is a managed external runtime binary (the runtime bootstrap.1): the fixture
+ * rclone is a managed external runtime binary, not an apt package: the fixture
  * simulates the canonical binary, the committed external-runtimes contract
  * and signing key, the official download origin (through the curl stub) and
  * the clearsign verification (through the gpg stub). The archive bytes are
@@ -894,7 +894,7 @@ it('recognizes the current staging host as satisfied: pre-existing repos, instal
         [$exit, $output] = bootstrapRuntimeRun(['--check'], $env);
 
         expect($exit)->toBe(0, "the already-bootstrapped staging host must satisfy --check:\n{$output}");
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
         expect($output)->toContain('PASS     os-release — ID=ubuntu VERSION_ID=22.04');
         expect($output)->toContain('PASS     repo:php — provided by a pre-existing apt source');
         expect($output)->toContain('PASS     repo:pgdg — provided by a pre-existing apt source');
@@ -935,7 +935,7 @@ it('reports the full work list on a clean Ubuntu 22.04 host and exits non-zero',
         [$exit, $output] = bootstrapRuntimeRun(['--check'], $env);
 
         expect($exit)->toBe(1, "a clean host cannot satisfy the install-bootstrap-runtime contract:\n{$output}");
-        expect($output)->toContain('SLICE 5.2 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: NOT SATISFIED');
         expect($output)->toContain('MISSING  repo:php');
         expect($output)->toContain('MISSING  repo:pgdg');
         expect($output)->toContain('MISSING  package:php8.5-fpm — not installed');
@@ -1144,7 +1144,7 @@ it('warns about a non-root --check without failing a satisfied host', function (
 
         expect($exit)->toBe(0, $output);
         expect($output)->toContain('WARN     effective-uid — 1000');
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
     } finally {
         bootstrapRuntimeCleanup($scratch);
     }
@@ -1162,7 +1162,7 @@ it('bootstraps a clean host: pinned repositories, one apt update, one install, c
         [$exit, $output] = bootstrapRuntimeRun(['--apply'], $env);
 
         expect($exit)->toBe(0, "apply on a clean compliant host must converge and verify:\n{$output}");
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
 
         // Both installer-owned repositories exist with the exact deb822
         // content: HTTPS URI, pinned dedicated keyring, amd64 only.
@@ -1423,7 +1423,7 @@ it('bootstraps a host that genuinely lacks curl and gpg: tooling first, external
 
         expect($exit)->toBe(0, "a genuinely minimal host must bootstrap end to end:\n{$output}");
         expect($output)->toContain('bootstrap repository tooling missing: ca-certificates curl gnupg');
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
 
         // The tooling appeared exactly the way a real host gets it —
         // through the apt install — and both repositories followed.
@@ -1645,7 +1645,7 @@ it('verifies the full contract on a compliant host without printing apply hints'
         [$exit, $output] = bootstrapRuntimeRun(['--verify'], $env);
 
         expect($exit)->toBe(0, $output);
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
         expect($output)->toContain('PASS     php-modules — all required modules loaded');
         expect($output)->toContain('PASS     tool:createdb');
         expect($output)->toContain('PASS     tool:dropdb');
@@ -1974,7 +1974,7 @@ it('upgrades the real staging v1.74.4 atomically through signed, checksummed, ve
         expect($output)->toContain('rclone: signature and checksum verified — extracting');
         expect($output)->toContain('rclone v'.$rcloneVersion.' installed at '.$scratch.'/fs/usr-bin/rclone');
         expect($output)->toContain('PASS     rclone — v'.$rcloneVersion);
-        expect($output)->toContain('SLICE 5.2 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST RUNTIME CONTRACT: SATISFIED');
 
         // The binary was replaced (it is now the extracted stub) with the
         // contract mode, and no staged temp file was left beside it.

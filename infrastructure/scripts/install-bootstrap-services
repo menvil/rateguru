@@ -3,8 +3,9 @@
 # Install-bootstrap-services — : services and committed host
 # configuration for a prepared RateGuru host.
 #
-# the clean-host bootstrap.1 defined what a valid host looks like; 5.2 installed the runtime;
-# 5.3 created the identities and filesystem boundaries. This slice turns that
+# bootstrap-host-preflight defined what a valid host looks like;
+# install-bootstrap-runtime installed the runtime; install-bootstrap-host-layout
+# created the identities and filesystem boundaries. This installer turns that
 # prepared host into the configured RateGuru service host required for
 # deployment: the installed operational bundle, the target perimeter, the
 # committed SSH restriction, the active-target Nginx/PHP-FPM/Supervisor/cron
@@ -350,8 +351,8 @@ All modes require root.
             service bootstrap it has always been.
 
   --check   Read-only install-bootstrap-services contract validation plus the intended
-            --apply action for every unsatisfied item. Runs the 5.2/5.3
-            prerequisite verifies, validates committed service
+            --apply action for every unsatisfied item. Runs the runtime and
+            host-layout prerequisite verifies, validates committed service
             configuration and the source registry, and inspects installed
             state and external prerequisites (presence only). Performs no
             mutation, no service reload/restart, no downloads.
@@ -508,7 +509,7 @@ template_value() {
 }
 
 # load_source_contract — fail-closed source-of-truth loading. This installer
-# runs strictly after slices 5.2/5.3, so jq and the targets CLI are hard
+# runs strictly after the runtime and host-layout installers, so jq and the targets CLI are hard
 # prerequisites. The registry is validated through the standalone `targets`
 # CLI — never re-implemented — and only then parsed.
 load_source_contract() {
@@ -1630,13 +1631,13 @@ report_summary() {
         if target_scoped; then
             printf 'TARGET SERVICES CONTRACT (%s): SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.4 CONTRACT: SATISFIED\n'
+            printf 'HOST SERVICES CONTRACT: SATISFIED\n'
         fi
     else
         if target_scoped; then
             printf 'TARGET SERVICES CONTRACT (%s): NOT SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.4 CONTRACT: NOT SATISFIED\n'
+            printf 'HOST SERVICES CONTRACT: NOT SATISFIED\n'
         fi
     fi
 }

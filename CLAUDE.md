@@ -39,7 +39,9 @@ bookkeeping about it:
   behaviour change, not a comment cleanup, and is still outstanding.
 
 `tests/Feature/Architecture/ReleaseBookkeepingTest.php` enforces this on the
-operational surface, so the rule is checked rather than merely written down.
+operational surface, so the rule is checked rather than merely written down. It
+matches plural ranges (`Phases 7-10`) and the legacy `Part E` labels as well as
+the singular forms — the same bookkeeping wearing a different spelling.
 
 ## Where shared test helpers live
 

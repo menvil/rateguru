@@ -19,7 +19,7 @@
 # packages, never creates users or directories, never chowns/chmods, never
 # writes configuration, never starts/stops/reloads services, never touches
 # firewall rules, and never modifies the runtime registry — it defines and
-# Validates the host contract that later bootstrap installers (5.2+) will satisfy.
+# Validates the host contract the bootstrap installers then satisfy.
 #
 # Supported host contract: the RateGuru staging VPS baseline only — Ubuntu
 # 22.04 (apt/dpkg + systemd), exactly. SUPPORTED_OS_ID and
@@ -894,7 +894,7 @@ report_service() {
             ;;
         missing)
             item MISSING "service:${unit}" "STATE: missing (${label}; ${kind})" \
-                "install and configure via slices 5.2/5.4"
+                "install and configure via the runtime and service installers"
             ;;
     esac
 }

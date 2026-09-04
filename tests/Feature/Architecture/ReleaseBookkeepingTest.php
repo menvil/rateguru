@@ -104,7 +104,12 @@ it('encodes no phase or slice number anywhere in the operational surface', funct
                 continue;
             }
 
-            if (preg_match('/\bPhase \d+(\.\d+)?[A-C]?\b|\bslice \d+\.\d+\b/', $line)) {
+            // Plural ranges and the legacy single-letter part labels are
+            // matched too: they are the same bookkeeping wearing a different
+            // spelling, and a singular-only pattern lets both straight
+            // through. The examples are deliberately not spelled out here —
+            // this file is scanned by its own rule.
+            if (preg_match('/\bPhases? \d+(\.\d+)?[A-C]?\b|\bslices? \d+\.\d+\b|\bPart [A-Z]\b/', $line)) {
                 $offenders[] = $relative.':'.($number + 1).' — '.trim($line);
             }
         }

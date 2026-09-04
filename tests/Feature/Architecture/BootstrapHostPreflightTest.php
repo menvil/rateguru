@@ -1343,7 +1343,7 @@ it('asserts the install-bootstrap-host-layout structural contract authoritativel
 });
 
 it('treats an absent current as legitimate PRE_DEPLOY state: DEFERRED, deployment-owned, exit 0 on a bootstrapped host', function () {
-    // the queue activation PRE_DEPLOY contract: a host whose 5.2-5.4 bootstrap is
+    // the queue activation PRE_DEPLOY contract: a host whose bootstrap is
     // complete but which has never received a release is a legitimate,
     // correctly bootstrapped host. The absent current and the deploy-time
     // external material are DEFERRED — never MISSING — and --check exits 0.

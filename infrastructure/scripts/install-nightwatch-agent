@@ -623,7 +623,7 @@ install_conf() {
     fi
 
     [[ -d "$(dirname "${dst_phys}")" ]] \
-        || fail "${DST_SUPERVISOR_DIR} does not exist — install Supervisor first (the runtime bootstrap/5.4)"
+        || fail "${DST_SUPERVISOR_DIR} does not exist — install Supervisor first (install-bootstrap-runtime installs it)"
 
     tmp="$(mktemp "${dst_phys}.XXXXXX")" || fail "cannot stage ${DST_CONF}"
 
