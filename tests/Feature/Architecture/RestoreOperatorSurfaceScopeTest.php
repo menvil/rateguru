@@ -364,7 +364,7 @@ it('activates no production target, provisions nothing and changes no DNS', func
 // =============================================================================
 
 it('leaves the accepted backup subsystem and the 7.3 restore primitives untouched', function () {
-    $changed = branchChangedFiles();
+    $changed = branchChangedCodeFiles();
 
     // The restore mechanics themselves were accepted on a real destructive
     // staging run. 7.4 adds --inspect and a machine-readable result line to

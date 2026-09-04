@@ -75,7 +75,18 @@ function releaseBookkeepingScannedFiles(): array
 {
     return array_values(array_filter(array_merge(
         releaseBookkeepingOperationalFiles(),
-        glob(base_path('tests/Feature/Architecture/*.php')) ?: [],
+        array_values(array_filter(
+            glob(base_path('tests/Feature/Architecture/*.php')) ?: [],
+            // The counterpart of the bootstrap-host exclusion above. That
+            // script identifies its children BY slice number in control flow
+            // and in the text it prints to an operator, so its test has to be
+            // able to quote that text verbatim. Excluding the script but not
+            // its test would leave the two demanding opposite things about the
+            // same string — and the way that resolves in practice is by
+            // editing the assertion until it passes, which is how a test stops
+            // testing anything.
+            static fn (string $path): bool => basename($path) !== 'BootstrapHostOrchestratorTest.php',
+        )),
         [base_path('tests/Pest.php')],
     ), 'is_file'));
 }

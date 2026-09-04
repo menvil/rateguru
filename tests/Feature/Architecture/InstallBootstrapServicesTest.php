@@ -626,8 +626,11 @@ it('requires root for every mode and mutates nothing without it', function () {
 // Prerequisite gates (5.2/5.3 authoritative verifies)
 // =============================================================================
 
-it('stops --apply before any mutation when the install-bootstrap-runtime or 5.3 verify fails', function () {
-    foreach (['runtime-installer' => '5.2', 'hostlayout-installer' => '5.3'] as $child => $slice) {
+it('stops --apply before any mutation when either prerequisite installer verify fails', function () {
+    foreach ([
+        'runtime-installer' => 'install-bootstrap-runtime',
+        'hostlayout-installer' => 'install-bootstrap-host-layout',
+    ] as $child => $prerequisite) {
         $scratch = bsvcScratchDir();
 
         try {
@@ -638,8 +641,8 @@ it('stops --apply before any mutation when the install-bootstrap-runtime or 5.3 
             [$exit, $output] = bsvcRun(['--apply'], $env);
 
             expect($exit)->toBe(1, $output);
-            expect($output)->toContain("converge slice {$slice} first (no service/config mutation was performed)");
-            expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, "a failing {$slice} gate must not mutate anything");
+            expect($output)->toContain("converge {$prerequisite} first (no service/config mutation was performed)");
+            expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, "a failing {$prerequisite} gate must not mutate anything");
             expect(bsvcSystemctlMutations($scratch))->toBe([]);
             expect(bsvcLog($scratch, 'children.log'))->not->toContain('--apply');
         } finally {

@@ -261,7 +261,7 @@ it('adds no durable release-artifact archive and no artifact bucket', function (
 });
 
 it('leaves the accepted backup subsystem and its manifest schema untouched', function () {
-    $changed = branchChangedFiles();
+    $changed = branchChangedCodeFiles();
 
     // toContain is variadic in Pest, so a second "message" argument is read as
     // another needle and the negation passes on any file — the diagnostic
@@ -318,12 +318,12 @@ it('changes backup by nothing more than that guard', function () {
     // may carry.
     $diff = branchFileDiff('infrastructure/scripts/backup');
 
-    expect($diff['removed'])->toBe([]);
+    // Both halves are judged as code. The additions already were; the
+    // removals were not, which made this guard fire on a comment being
+    // reworded — a change that by definition cannot weaken backup.
+    expect(sourceCodeLines($diff['removed']))->toBe([]);
 
-    $addedCode = array_values(array_filter(
-        array_map('trim', $diff['added']),
-        static fn (string $line): bool => $line !== '' && ! str_starts_with($line, '#'),
-    ));
+    $addedCode = sourceCodeLines($diff['added']);
 
     expect($addedCode)->toBeIn([
         [],
@@ -452,8 +452,12 @@ it('confines every restore concern in the shared library to its own sections', f
 
     $common = committedFile('infrastructure/scripts/common');
 
-    $guardStart = mb_strpos($common, '# --- restore guard ---');
-    $alignmentStart = mb_strpos($common, '# --- restore alignment authorization ---');
+    // Matched by PREFIX, not by the whole banner. These markers end in a run
+    // of dashes padded to a fixed width, so any edit to the words inside them
+    // changes the full string — and a guard that silently stops finding its
+    // own section does not fail, it just stops guarding.
+    $guardStart = mb_strpos($common, '# --- restore guard');
+    $alignmentStart = mb_strpos($common, '# --- restore alignment authorization');
     $end = mb_strpos($common, '# --- deployment target registry (end) ---');
 
     expect($guardStart)->not->toBeFalse('the restore guard section is missing from common');
@@ -462,8 +466,11 @@ it('confines every restore concern in the shared library to its own sections', f
 
     $restoreSections = mb_substr($common, $guardStart, $end - $guardStart);
 
-    // Every line this branch added to common belongs to one of them.
-    foreach ($diff['added'] as $line) {
+    // Every line of CODE this branch added to common belongs to one of them.
+    // Comments are excluded deliberately: `common` carries prose all over it,
+    // and rewording a comment somewhere else in the file is not a restore
+    // concern leaking out of its section.
+    foreach (sourceCodeLines($diff['added']) as $line) {
         expect($restoreSections)->toContain($line);
     }
 
@@ -472,7 +479,7 @@ it('confines every restore concern in the shared library to its own sections', f
     // hold refusal used to say controlled alignment did not exist yet), but it
     // may never touch a line of anything that was already in common.
     $base = baseRevisionFile('infrastructure/scripts/common');
-    $baseGuardStart = mb_strpos($base, '# --- restore guard ---');
+    $baseGuardStart = mb_strpos($base, '# --- restore guard');
     $baseEnd = mb_strpos($base, '# --- deployment target registry (end) ---');
 
     if ($base === '') {
@@ -483,13 +490,13 @@ it('confines every restore concern in the shared library to its own sections', f
     } elseif ($baseGuardStart !== false && $baseEnd !== false && $baseEnd > $baseGuardStart) {
         $baseSections = mb_substr($base, $baseGuardStart, $baseEnd - $baseGuardStart);
 
-        foreach ($diff['removed'] as $line) {
+        foreach (sourceCodeLines($diff['removed']) as $line) {
             expect($baseSections)->toContain($line);
         }
     } else {
         // A base predating the restore guard entirely: there is nothing of ours
-        // in it, so nothing may have been removed.
-        expect($diff['removed'])->toBe([]);
+        // in it, so no line of code may have been removed.
+        expect(sourceCodeLines($diff['removed']))->toBe([]);
     }
 
     // The four helpers, and not one filesystem mutation between them: `common`
@@ -509,7 +516,7 @@ it('confines every restore concern in the shared library to its own sections', f
     'requires the PR base SHA or an origin/develop reference');
 
 it('does not weaken deploy, rollback, cleanup or any earlier phase contract', function () {
-    $changed = branchChangedFiles();
+    $changed = branchChangedCodeFiles();
 
     // Files no phase after 7.3 has any business touching to build a restore
     // surface. deploy/rollback/cleanup are deliberately NOT in this list any
@@ -521,8 +528,13 @@ it('does not weaken deploy, rollback, cleanup or any earlier phase contract', fu
         'infrastructure/scripts/targets',
         'infrastructure/scripts/health-check',
         'infrastructure/scripts/status',
-        'infrastructure/scripts/prepare-host',
         'infrastructure/scripts/bootstrap-host',
+        // prepare-host is deliberately NOT here any more. It printed one
+        // operator-facing label carrying a phase number, which the naming
+        // convention in CLAUDE.md — enforced by ReleaseBookkeepingTest over
+        // every operational script — requires to be removed. Two guards asked
+        // for opposite things about the same line; freezing a label is not
+        // what this one is for, and its remaining entries still hold.
         'infrastructure/config/deployment-targets.json',
         'infrastructure/templates/deployment.conf.example',
     ] as $untouched) {

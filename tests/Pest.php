@@ -265,6 +265,54 @@ function branchChangedFiles(): array
 }
 
 /**
+ * The changed files whose CODE actually changed — a file this branch touched
+ * only in comments is not in the list.
+ *
+ * The "these files stay untouched" guards exist to protect behaviour: a script
+ * accepted on real hardware must not be quietly edited by a later slice. What
+ * they are not for is freezing prose. A repository-wide comment cleanup
+ * legitimately rewrites a line in `backup` or `common` without changing a
+ * single thing either one does, and a guard that fires on that is measuring
+ * bytes where it means to measure behaviour — which trains people to widen it,
+ * and then it stops catching the real edit too.
+ *
+ * @return list<string>
+ */
+function branchChangedCodeFiles(): array
+{
+    return array_values(array_filter(
+        branchChangedFiles(),
+        static function (string $path): bool {
+            $diff = branchFileDiff($path);
+            $changed = array_merge($diff['added'], $diff['removed']);
+
+            return $changed !== [] && sourceCodeLines($changed) !== [];
+        },
+    ));
+}
+
+/**
+ * The lines that are not blank and not a whole-line comment.
+ *
+ * Deliberately only `#` and `//`. A leading `*` is a comment continuation in
+ * PHP but a `case` arm in shell, and every file these guards protect is a
+ * shell script or a `#`-commented config — so treating `*` as prose here would
+ * hide exactly the kind of change they exist to catch.
+ *
+ * @param  list<string>  $lines
+ * @return list<string>
+ */
+function sourceCodeLines(array $lines): array
+{
+    return array_values(array_filter(
+        array_map('trim', $lines),
+        static fn (string $line): bool => $line !== ''
+            && ! str_starts_with($line, '#')
+            && ! str_starts_with($line, '//'),
+    ));
+}
+
+/**
  * The lines this branch adds to, and removes from, one file.
  *
  * `-U0` so the hunks carry no context: every `+` really is an addition. This is
