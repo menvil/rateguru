@@ -29,8 +29,18 @@ not a strict JSON integer of at least 2.
 
 A backup contains the database dump, storage, `.env`, release metadata and
 the server-configuration snapshot — **not** the built application artifact
-itself. A durable, immutable artifact archive is separate, planned work
-(`infrastructure/ROADMAP.md`, Phase 7 recovery rehearsal).
+itself, and there is deliberately no durable artifact archive anywhere in
+RateGuru: no dedicated bucket, no artifact-specific credentials, no artifact
+retention policy and no backup-to-artifact mapping. GitHub Actions artifacts
+stay what they are, temporary CI/deployment transport.
+
+That is not a gap waiting to be filled. Recovery rebuilds the application from
+`release.json.source_sha` — the exact commit every backup already carries —
+through the same one build implementation an ordinary release uses, with the
+current trusted build tooling. A commit is already stored, already immutable
+and already trusted; a tarball would have to be made all three.
+`release.json.release` remains the useful historical identity of what was
+running. See [`recover-host.md`](recover-host.md).
 
 ## Local backup and restore test
 

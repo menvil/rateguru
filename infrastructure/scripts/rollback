@@ -390,7 +390,7 @@ perform_rollback() {
     # would health-check the target and bring it back up, which is exactly what
     # the hold exists to prevent. Ended only by the controlled alignment deploy
     # and `restore-target --resume`, never by a rollback.
-    assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a rollback"
+    assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a rollback"
 
     validate_releases_root
 

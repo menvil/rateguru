@@ -103,13 +103,14 @@ it('keeps deployment failure recovery active until terminal history is written',
         ->toContain('FAILURE_STATUS="failed-preparation"')
         ->toContain('FAILURE_STATUS="failed-health-check"')
         ->not->toContain('migrate:rollback')
-        // the controlled code alignment gave the terminal history event a name, because a
-        // controlled restore alignment must never record "deployment-finished
-        // success" for a target that is still in maintenance. The literal now
-        // appears once, as that name's default; the name itself is what the
-        // success path and the failure handler both write.
+        // The terminal history event has a name, because a controlled
+        // deployment must never record "deployment-finished success" for a
+        // target that is still held. The literal appears once, as that name's
+        // default; the name itself is what the ordinary success path, each
+        // controlled mode's finalizer and the failure handler write — four
+        // call sites, one event name between them.
         ->and(substr_count($deploy, 'DEPLOY_HISTORY_FINISH_EVENT="deployment-finished"'))->toBe(1)
-        ->and(substr_count($deploy, '"${DEPLOY_HISTORY_FINISH_EVENT}"'))->toBe(3)
+        ->and(substr_count($deploy, '"${DEPLOY_HISTORY_FINISH_EVENT}"'))->toBe(4)
         ->and(substr_count($deploy, 'trap - EXIT'))->toBe(1);
 });
 

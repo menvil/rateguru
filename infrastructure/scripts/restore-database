@@ -164,60 +164,13 @@ resolve_restore_database_paths() {
 }
 
 # --- PostgreSQL predicates --------------------------------------------------------
-
-database_owner_of() {
-    restore_superuser_query "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$1';"
-}
-
-# The privilege flags an application role must not hold. A role that already
-# existed was created by someone else, and "it can log in" is not the same as
-# "it is safe to restore a whole database as". Identical list and reasoning to
-# install-target-database's own resolve_role_elevated_privileges.
-assert_application_role_safe() {
-    restore_superuser_query "SELECT 1 FROM pg_roles WHERE rolname = '${DATABASE_ROLE}';"
-    [[ "${RESTORE_SQL_RESULT}" == "1" ]] \
-        || fail "application role ${DATABASE_ROLE} does not exist"
-
-    restore_superuser_query "SELECT rolcanlogin FROM pg_roles WHERE rolname = '${DATABASE_ROLE}';"
-    [[ "${RESTORE_SQL_RESULT}" == "t" ]] \
-        || fail "application role ${DATABASE_ROLE} cannot log in"
-
-    restore_superuser_query "
-        SELECT trim(concat_ws(' ',
-            CASE WHEN rolsuper       THEN 'SUPERUSER'   END,
-            CASE WHEN rolcreatedb    THEN 'CREATEDB'    END,
-            CASE WHEN rolcreaterole  THEN 'CREATEROLE'  END,
-            CASE WHEN rolreplication THEN 'REPLICATION' END,
-            CASE WHEN rolbypassrls   THEN 'BYPASSRLS'   END))
-        FROM pg_roles WHERE rolname = '${DATABASE_ROLE}';
-    "
-
-    [[ -z "${RESTORE_SQL_RESULT}" ]] \
-        || fail "application role ${DATABASE_ROLE} holds elevated privileges (${RESTORE_SQL_RESULT}) — refusing to restore a database as it"
-}
-
-# application_query DBNAME SQL — one scalar, read over TCP as the application
-# role with exactly the credentials the application itself uses. PGPASSWORD
-# keeps the secret out of the argument vector; it is never logged, never
-# written to state, and never compared against anything but emptiness.
 #
-# Captured by the CALLER with $(...) and checked with `|| fail`, so a failure
-# aborts in the caller's own shell rather than inside a subshell.
-application_query() {
-    local database="$1" sql="$2"
-
-    PGPASSWORD="${ENV_DB_PASSWORD}" \
-        "${PSQL_BIN}" \
-            --no-psqlrc \
-            --no-align \
-            --tuples-only \
-            --set=ON_ERROR_STOP=1 \
-            --host="${ENV_DB_HOST}" \
-            --port="${ENV_DB_PORT}" \
-            --username="${DATABASE_ROLE}" \
-            --dbname="${database}" \
-            --command="${sql}"
-}
+# restore_database_owner_of, restore_assert_application_role_safe and
+# restore_application_query all live in restore-common. They are shared because
+# recover-host has to prove the identical things about a prepared replacement
+# host's role and database BEFORE it will touch it, and two copies of "which
+# privilege flags make a role unsafe to restore as" is exactly the kind of pair
+# that drifts.
 
 # --- stage --------------------------------------------------------------------------
 
@@ -227,7 +180,7 @@ drop_staged_database() {
 }
 
 perform_stage() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" backup-verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" stage-database
 
     restore_resolve_credentials "${TARGET_ROOT}" "${DATABASE_NAME}" "${DATABASE_ROLE}"
 
@@ -236,7 +189,7 @@ perform_stage() {
     restore_database_exists "${DATABASE_NAME}" \
         || fail "the target's canonical database does not exist: ${DATABASE_NAME} — this is a data restore, not a target provisioning step"
 
-    assert_application_role_safe
+    restore_assert_application_role_safe "${DATABASE_ROLE}"
 
     ! restore_database_exists "${STAGED_DATABASE}" \
         || fail "staged restore database already exists: ${STAGED_DATABASE}"
@@ -307,14 +260,14 @@ verify_staged_database() {
     # `fail` on an unreachable catalog must abort this script, not merely a
     # subshell that the caller would then read an empty result from.
     local owner
-    database_owner_of "${STAGED_DATABASE}"
+    restore_database_owner_of "${STAGED_DATABASE}"
     owner="${RESTORE_SQL_RESULT}"
 
     [[ "${owner}" == "${DATABASE_ROLE}" ]] \
         || fail "staged database ${STAGED_DATABASE} is owned by '${owner}', expected ${DATABASE_ROLE}"
 
     STAGED_TABLE_COUNT="$(
-        application_query "${STAGED_DATABASE}" "
+        restore_application_query "${STAGED_DATABASE}" "${DATABASE_ROLE}" "
             SELECT count(*)
             FROM information_schema.tables
             WHERE table_schema = 'public';
@@ -329,7 +282,7 @@ verify_staged_database() {
     fi
 
     STAGED_MIGRATION_COUNT="$(
-        application_query "${STAGED_DATABASE}" "
+        restore_application_query "${STAGED_DATABASE}" "${DATABASE_ROLE}" "
             SELECT CASE
                 WHEN to_regclass('public.migrations') IS NULL
                     THEN 0
@@ -372,7 +325,7 @@ block_and_terminate() {
 }
 
 perform_activate() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" emergency-backup-verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" activate-database
 
     restore_database_exists "${STAGED_DATABASE}" \
         || fail "staged restore database is missing: ${STAGED_DATABASE}"
@@ -409,12 +362,12 @@ perform_activate() {
 # caller believes activation got: an interrupted activation can be in exactly
 # three observable states, and each has one correct reversal.
 perform_compensate() {
-    # emergency-backup-verified is included deliberately: an activation that
-    # failed BETWEEN its two renames never reached the phase update, and that
-    # is precisely the state compensation exists for. Refusing it there would
+    # The kind's own pre-activation phase is included in the compensation set
+    # deliberately (see the table in restore-common): an activation that failed
+    # BETWEEN its two renames never reached the phase update, and that is
+    # precisely the state compensation exists for. Refusing it there would
     # leave a recoverable target held.
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" \
-        emergency-backup-verified database-activated storage-activated verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" compensate
 
     local live_exists=false pre_exists=false staged_exists=false
 
@@ -480,7 +433,7 @@ perform_compensate() {
 # --- commit -----------------------------------------------------------------------------
 
 perform_commit() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" commit
 
     if restore_database_exists "${PRE_RESTORE_DATABASE}"; then
         "${RUNUSER_BIN}" -u "${POSTGRES_SUPERUSER}" -- \

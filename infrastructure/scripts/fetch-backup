@@ -348,12 +348,16 @@ perform_fetch() {
     # no second fetch can pass it at the same time.
     acquire_fetch_lock
 
+    # Namespace-aware rather than hardcoded to the restore root: restore-target
+    # and recover-host each create the workspace themselves, in their own
+    # namespace, and then call this script — so an existing workspace is
+    # expected in both flows, and the one that exists is the one to stage into.
+    # A standalone fetch with no workspace anywhere creates its own, in the
+    # restore namespace, exactly as it always did.
     if [[ "${OPERATION_SEEN}" == true ]] \
-        && [[ -d "$(restore_operation_root "${TARGET_ID}" "${OPERATION_ID}")" ]]
+        && restore_locate_operation_root "${TARGET_ID}" "${OPERATION_ID}"
     then
-        # restore-target creates the workspace itself and then calls this
-        # script, so an existing workspace is expected in that flow — but it
-        # must not already hold a staged backup.
+        # The workspace must not already hold a staged backup.
         WORKSPACE="$(restore_require_operation_workspace "${TARGET_ID}" "${OPERATION_ID}")"
     else
         WORKSPACE="$(restore_create_operation_workspace "${TARGET_ID}" "${OPERATION_ID}")"

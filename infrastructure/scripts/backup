@@ -465,7 +465,7 @@ main() {
     #
     # Refused before perform_backup creates a temporary root, a snapshot or a
     # retention pass. backup-cycle inherits this by starting with this script.
-    assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"
+    assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"
 
     perform_backup
 }

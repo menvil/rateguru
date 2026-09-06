@@ -7,17 +7,25 @@
 # (which every caller sources FIRST — every helper below assumes common's
 # log/fail/target_* and rateguru_test_overrides_allowed already exist).
 #
-# It exists for one reason: the five restore CLIs (fetch-backup,
-# verify-backup, restore-database, restore-storage, restore-target) share
-# five kinds of validation that must be identical in all of them, and
-# spreading five copies of each across five privileged scripts is how a
+# It exists for one reason: the data-operation CLIs (fetch-backup,
+# verify-backup, restore-database, restore-storage, restore-target and
+# recover-host) share several kinds of validation that must be identical in all
+# of them, and spreading a copy of each across six privileged scripts is how a
 # restore ends up trusting a path in one place that another place rejects:
 #
 #   * backup path/identity validation  (which backup, belonging to whom)
-#   * operation workspace validation   (where a restore may write)
+#   * operation workspace validation   (where an operation may write)
 #   * storage archive safety           (what may be extracted as root)
-#   * restore state handling           (what phase an operation is in)
-#   * PostgreSQL identifier/name derivation for the staged swap
+#   * operation state handling         (which kind, and what phase, it is in)
+#   * PostgreSQL identifier/name derivation and role safety for the staged swap
+#   * Supervisor observation for the target queue program
+#
+# Two operation KINDS drive the staged swap: a live target restore, and a host
+# recovery onto a prepared replacement machine. They are separate state
+# machines with separate workspaces, guards and histories — see
+# RESTORE_OPERATION_KINDS below — and they deliberately share one
+# implementation of the database and storage mechanics rather than growing a
+# second one.
 #
 # Nothing here is target-specific until it is called: sourcing this file must
 # never fail merely because a registry, a workspace or a backup is absent.
@@ -65,6 +73,7 @@ POSTGRES_SUPERUSER="$(restore_gated_default RATEGURU_RESTORE_SUPERUSER postgres)
 
 # Restore Target Data-only paths and identities.
 RESTORE_HISTORY_ROOT="$(restore_gated_default RATEGURU_RESTORE_HISTORY_ROOT /home/www/rateguru/restores)"
+RECOVERY_HISTORY_ROOT="$(restore_gated_default RATEGURU_RECOVERY_HISTORY_ROOT /home/www/rateguru/recoveries)"
 RESTORE_CRON_D_ROOT="$(restore_gated_default RATEGURU_RESTORE_CRON_D_ROOT /etc/cron.d)"
 RESTORE_SUPERVISORCTL_BIN="$(restore_gated_default RATEGURU_RESTORE_SUPERVISORCTL_BIN supervisorctl)"
 RESTORE_PGREP_BIN="$(restore_gated_default RATEGURU_RESTORE_PGREP_BIN pgrep)"
@@ -201,28 +210,135 @@ restore_validate_identifier() {
         || fail "${label} is not a plain lowercase PostgreSQL identifier: ${value}"
 }
 
+# --- operation kinds ----------------------------------------------------------
+#
+# One staged-swap implementation serves two operations, and the kind is what
+# tells restore-database and restore-storage which phase chain they are part
+# of. It is READ FROM the operation's own persisted state, never accepted as a
+# command-line context: a caller able to name the kind could drive a live
+# restore's activation with a recovery's weaker preconditions.
+#
+#   target-restore  a live target's data is replaced while its infrastructure,
+#                   its release and its runtime already exist. An emergency
+#                   pre-restore backup is mandatory, and its phase is what
+#                   authorizes activation.
+#   host-recovery   a prepared, EMPTY replacement host is populated from an
+#                   offsite backup. There is nothing live to emergency-back-up,
+#                   so a separate authorization phase takes that gate's place —
+#                   never the emergency one, which would be a lie about a
+#                   backup that was never taken.
+#
+# Backward compatibility is deliberate and load-bearing: an operation state
+# written before this field existed carries no operation_kind, and is a live
+# target restore by definition, because nothing else could have written it.
+RESTORE_OPERATION_KIND_TARGET_RESTORE=target-restore
+RESTORE_OPERATION_KIND_HOST_RECOVERY=host-recovery
+
+RESTORE_OPERATION_KINDS=(
+    "${RESTORE_OPERATION_KIND_TARGET_RESTORE}"
+    "${RESTORE_OPERATION_KIND_HOST_RECOVERY}"
+)
+
+# The run-root subtree each kind writes into. Two namespaces, never one shared
+# directory: a recovery is not a restore wearing a different label, and an
+# operator (or a guarded remover) looking at a path must be able to tell which
+# state machine owns it without opening a file.
+RESTORE_OPERATION_NAMESPACE_TARGET_RESTORE=restores
+RESTORE_OPERATION_NAMESPACE_HOST_RECOVERY=recoveries
+
+RESTORE_OPERATION_NAMESPACES=(
+    "${RESTORE_OPERATION_NAMESPACE_TARGET_RESTORE}"
+    "${RESTORE_OPERATION_NAMESPACE_HOST_RECOVERY}"
+)
+
+restore_assert_operation_namespace() {
+    local namespace="${1-}" known
+
+    for known in "${RESTORE_OPERATION_NAMESPACES[@]}"; do
+        [[ "${namespace}" != "${known}" ]] || return 0
+    done
+
+    fail "unknown operation namespace: ${namespace:-<unset>}"
+}
+
 # --- operation workspace ------------------------------------------------------
 #
-# Every restore writes into exactly one root-only directory whose path is
+# Every operation writes into exactly one root-only directory whose path is
 # built from three validated components and nothing else:
 #
-#   ${RUN_ROOT}/restores/<target-id>/<operation-id>
+#   ${RUN_ROOT}/restores/<target-id>/<operation-id>     a live target restore
+#   ${RUN_ROOT}/recoveries/<target-id>/<operation-id>   a host recovery
 #
 # No operator-supplied filesystem path reaches any of these functions. The
 # target ID has already passed common's validate_target_id (a closed
 # [a-z0-9-] class); the operation ID has passed validate_operation_id.
 
-restore_run_root() {
-    printf '%s/restores\n' "${RUN_ROOT}"
+restore_namespace_run_root() {
+    local namespace="$1"
+
+    restore_assert_operation_namespace "${namespace}"
+
+    printf '%s/%s\n' "${RUN_ROOT}" "${namespace}"
+}
+
+restore_operation_root_in() {
+    local namespace="$1" target_id="$2" operation_id="$3"
+
+    validate_target_id "${target_id}"
+    validate_operation_id "${operation_id}"
+
+    printf '%s/%s/%s\n' "$(restore_namespace_run_root "${namespace}")" "${target_id}" "${operation_id}"
 }
 
 restore_operation_root() {
     local target_id="$1" operation_id="$2"
 
+    restore_operation_root_in "${RESTORE_OPERATION_NAMESPACE_TARGET_RESTORE}" "${target_id}" "${operation_id}"
+}
+
+recovery_operation_root() {
+    local target_id="$1" operation_id="$2"
+
+    restore_operation_root_in "${RESTORE_OPERATION_NAMESPACE_HOST_RECOVERY}" "${target_id}" "${operation_id}"
+}
+
+# restore_locate_operation_root TARGET OPERATION — which namespace, if any,
+# holds this operation. Sets RESTORE_LOCATED_OPERATION_ROOT and returns 0, or
+# returns non-zero when no namespace holds it.
+#
+# This is what keeps the shared primitives free of a caller-supplied namespace:
+# restore-database is told a target and an operation and discovers the rest,
+# so no argument can point it at a workspace whose state machine it is not
+# part of. An operation ID present in BOTH namespaces is not a state this
+# tooling can produce (IDs carry three bytes of urandom and each creator
+# refuses an existing directory), so it is a hard failure rather than a
+# preference for one of them.
+RESTORE_LOCATED_OPERATION_ROOT=""
+
+restore_locate_operation_root() {
+    local target_id="$1" operation_id="$2"
+    local namespace root found="" count=0
+
     validate_target_id "${target_id}"
     validate_operation_id "${operation_id}"
 
-    printf '%s/%s/%s\n' "$(restore_run_root)" "${target_id}" "${operation_id}"
+    RESTORE_LOCATED_OPERATION_ROOT=""
+
+    for namespace in "${RESTORE_OPERATION_NAMESPACES[@]}"; do
+        root="${RUN_ROOT}/${namespace}/${target_id}/${operation_id}"
+
+        if [[ -e "${root}" ]] || [[ -L "${root}" ]]; then
+            found="${root}"
+            count=$(( count + 1 ))
+        fi
+    done
+
+    (( count <= 1 )) \
+        || fail "operation ${operation_id} exists in more than one operation namespace under ${RUN_ROOT} — refusing to guess which state machine a privileged step belongs to"
+
+    [[ -n "${found}" ]] || return 1
+
+    RESTORE_LOCATED_OPERATION_ROOT="${found}"
 }
 
 restore_state_file() {
@@ -266,16 +382,28 @@ restore_assert_directory_safe() {
     fi
 }
 
-# restore_create_operation_workspace TARGET OPERATION — creates the workspace
-# for a NEW operation. Fails closed if it already exists: an operation ID is
-# generated once and never reused, so an existing directory means either a
-# collision or a caller trying to write into somebody else's live restore.
+# restore_create_operation_workspace TARGET OPERATION [NAMESPACE] — creates the
+# workspace for a NEW operation, in the live-restore namespace unless told
+# otherwise. Fails closed if it already exists in EITHER namespace: an
+# operation ID is generated once and never reused, so an existing directory
+# means either a collision or a caller trying to write into somebody else's
+# live operation.
 restore_create_operation_workspace() {
-    local target_id="$1" operation_id="$2" root
-    root="$(restore_operation_root "${target_id}" "${operation_id}")"
+    local target_id="$1" operation_id="$2"
+    local namespace="${3:-${RESTORE_OPERATION_NAMESPACE_TARGET_RESTORE}}"
+    local namespace_root root
 
-    install -d -o root -g root -m 0700 "$(restore_run_root)"
-    install -d -o root -g root -m 0700 "$(restore_run_root)/${target_id}"
+    restore_assert_operation_namespace "${namespace}"
+
+    namespace_root="$(restore_namespace_run_root "${namespace}")"
+    root="$(restore_operation_root_in "${namespace}" "${target_id}" "${operation_id}")"
+
+    if restore_locate_operation_root "${target_id}" "${operation_id}"; then
+        fail "operation workspace already exists: ${RESTORE_LOCATED_OPERATION_ROOT}"
+    fi
+
+    install -d -o root -g root -m 0700 "${namespace_root}"
+    install -d -o root -g root -m 0700 "${namespace_root}/${target_id}"
 
     [[ ! -e "${root}" ]] && [[ ! -L "${root}" ]] \
         || fail "restore operation workspace already exists: ${root}"
@@ -286,15 +414,16 @@ restore_create_operation_workspace() {
 }
 
 # restore_require_operation_workspace TARGET OPERATION — resolves and
-# validates an EXISTING workspace.
+# validates an EXISTING workspace, in whichever namespace actually holds it.
 restore_require_operation_workspace() {
-    local target_id="$1" operation_id="$2" root
-    root="$(restore_operation_root "${target_id}" "${operation_id}")"
+    local target_id="$1" operation_id="$2"
 
-    [[ -e "${root}" ]] || fail "restore operation workspace does not exist: ${root}"
-    restore_assert_directory_safe "${root}" "restore operation workspace"
+    restore_locate_operation_root "${target_id}" "${operation_id}" \
+        || fail "restore operation workspace does not exist: $(restore_operation_root "${target_id}" "${operation_id}")"
 
-    printf '%s\n' "${root}"
+    restore_assert_directory_safe "${RESTORE_LOCATED_OPERATION_ROOT}" "restore operation workspace"
+
+    printf '%s\n' "${RESTORE_LOCATED_OPERATION_ROOT}"
 }
 
 # restore_remove_operation_path PATH — the ONLY place this library removes a
@@ -308,15 +437,29 @@ restore_require_operation_workspace() {
 # anything but validated target/operation IDs.
 restore_remove_operation_path() {
     local path="${1-}"
-    local run_root
-    run_root="$(restore_run_root)"
+    local namespace run_root contained=false
 
     [[ -n "${path}" ]] || fail "refusing to remove an empty path"
     [[ "${path}" == /* ]] || fail "refusing to remove a relative path: ${path}"
     [[ "${path}" != *".."* ]] || fail "refusing to remove a path with a relative component: ${path}"
-    [[ "${path}" == "${run_root}/"* ]] \
-        || fail "refusing to remove a path outside ${run_root}: ${path}"
-    [[ "${path}" != "${run_root}/" ]] || fail "refusing to remove the restore run root"
+
+    # Both operation namespaces, each held to the identical perimeter: a path
+    # must be strictly INSIDE one of them, and neither root is itself
+    # removable. Widening this to "anywhere under RUN_ROOT" would put the lock
+    # files and every future run-root tenant inside the blast radius.
+    for namespace in "${RESTORE_OPERATION_NAMESPACES[@]}"; do
+        run_root="${RUN_ROOT}/${namespace}"
+
+        [[ "${path}" == "${run_root}/"* ]] || continue
+        [[ "${path}" != "${run_root}/" ]] || fail "refusing to remove the ${namespace} run root"
+
+        contained=true
+        break
+    done
+
+    [[ "${contained}" == true ]] \
+        || fail "refusing to remove a path outside ${RUN_ROOT}/{${RESTORE_OPERATION_NAMESPACES[0]},${RESTORE_OPERATION_NAMESPACES[1]}}: ${path}"
+
     [[ ! -L "${path}" ]] || fail "refusing to recursively remove a symlink: ${path}"
 
     rm -rf -- "${path}"
@@ -420,7 +563,7 @@ restore_state_require_phase() {
     shift 2
 
     [[ -f "${state_file}" ]] \
-        || fail "restore operation has no state file: ${state_file} — this primitive is driven by restore-target, never invoked on its own"
+        || fail "restore operation has no state file: ${state_file} — this primitive is driven by restore-target or recover-host, never invoked on its own"
 
     local state_target phase
     state_target="$(restore_state_get "${state_file}" target)"
@@ -437,6 +580,110 @@ restore_state_require_phase() {
     done
 
     fail "restore operation is in phase '${phase:-<unset>}', expected one of: $*"
+}
+
+# --- operation kind and the step/phase table ----------------------------------
+#
+# restore-database and restore-storage are driven by two different
+# orchestrators, and each step is legal in a different phase depending on which
+# one is driving. The table below is the ONLY place that mapping exists.
+#
+# The live-restore column is byte-for-byte the set of phases those two scripts
+# demanded before host recovery existed — including `emergency-backup-verified`
+# as the activation gate, and including its deliberate presence in the
+# compensation set (an activation that failed BETWEEN its two renames never
+# reached the phase update, and that is precisely what compensation exists
+# for). Recovery gets its own gate, `recovery-activation-authorized`, rather
+# than borrowing that one: writing `emergency-backup-verified` for an operation
+# that took no emergency backup would make the strongest safety claim in the
+# live restore mean nothing.
+
+# Set by restore_read_operation_kind. Never read from a command line.
+RESTORE_OPERATION_KIND=""
+
+# restore_read_operation_kind FILE — the operation's own kind, defaulting to a
+# live target restore when the field is absent.
+#
+# The default is not laziness: every operation state written before this field
+# existed belongs to a live target restore, because nothing else could have
+# written one. An unknown value is a hard failure — a state document this
+# library cannot classify must never fall back to the kind with the weaker
+# activation gate.
+#
+# Called DIRECTLY, never inside $(...): `fail` is an `exit`, and an exit inside
+# a command substitution would kill only the subshell, leaving the caller with
+# an empty kind that is indistinguishable from a legacy restore.
+restore_read_operation_kind() {
+    local state_file="$1" kind known
+
+    RESTORE_OPERATION_KIND=""
+
+    [[ -f "${state_file}" ]] \
+        || fail "restore operation has no state file: ${state_file} — this primitive is driven by restore-target or recover-host, never invoked on its own"
+
+    kind="$(restore_state_get "${state_file}" operation_kind)"
+
+    if [[ -z "${kind}" ]]; then
+        RESTORE_OPERATION_KIND="${RESTORE_OPERATION_KIND_TARGET_RESTORE}"
+
+        return 0
+    fi
+
+    for known in "${RESTORE_OPERATION_KINDS[@]}"; do
+        if [[ "${kind}" == "${known}" ]]; then
+            RESTORE_OPERATION_KIND="${kind}"
+
+            return 0
+        fi
+    done
+
+    fail "operation state records an unknown operation kind: ${kind}"
+}
+
+# restore_require_step_phase FILE TARGET STEP — the fail-closed guard every
+# destructive step in restore-database and restore-storage runs first.
+#
+# STEP names what is about to happen, not which phase it expects; the phase
+# comes from the table below, keyed on the operation kind the state itself
+# records. That is what stops a caller from choosing its own preconditions.
+restore_require_step_phase() {
+    local state_file="$1" target_id="$2" step="$3"
+    local -a allowed=()
+
+    restore_read_operation_kind "${state_file}"
+
+    case "${RESTORE_OPERATION_KIND}:${step}" in
+        target-restore:stage-database)     allowed=(backup-verified) ;;
+        host-recovery:stage-database)      allowed=(environment-matched) ;;
+
+        target-restore:stage-storage)      allowed=(database-staged) ;;
+        host-recovery:stage-storage)       allowed=(database-staged) ;;
+
+        target-restore:activate-database)  allowed=(emergency-backup-verified) ;;
+        host-recovery:activate-database)   allowed=(recovery-activation-authorized) ;;
+
+        target-restore:activate-storage)   allowed=(database-activated) ;;
+        host-recovery:activate-storage)    allowed=(database-activated) ;;
+
+        target-restore:compensate)
+            allowed=(emergency-backup-verified database-activated storage-activated verified) ;;
+        host-recovery:compensate)
+            allowed=(recovery-activation-authorized database-activated storage-activated verified) ;;
+
+        # A live restore commits as the last act of the restore itself. A host
+        # recovery cannot: its retained pre-recovery database and storage tree
+        # are the only way back until the exact code has been deployed and the
+        # host has proven healthy, so the commit happens in `recover-host
+        # --resume`, with the operation in `awaiting-code`.
+        target-restore:commit)             allowed=(verified) ;;
+        host-recovery:commit)              allowed=(awaiting-code) ;;
+
+        *)
+            fail "internal: no phase is defined for step '${step}' of a ${RESTORE_OPERATION_KIND} operation"
+            ;;
+    esac
+
+    restore_state_require_phase "${state_file}" "${target_id}" "${allowed[@]}"
 }
 
 # --- restore history ----------------------------------------------------------
@@ -460,6 +707,29 @@ restore_history_append() {
     history_file="$(restore_history_file)"
 
     install -d -o root -g root -m 0700 "${RESTORE_HISTORY_ROOT}" || return 1
+
+    printf '%s\n' "${record}" >> "${history_file}" || return 1
+    chmod 0600 "${history_file}" || return 1
+}
+
+# The recovery journal. A separate file in a separate root, for the same reason
+# the guards are separate: a reader asking "has this host ever been rebuilt?"
+# must not have to filter live restores out of the answer, and a recovery
+# record carries fields (the replacement host's prepared state, the commit it
+# waited for) a restore record has no place for.
+#
+# Identity and state only — no secret value, no content hash, nothing that
+# could act as a fingerprint for the environment file this operation compares.
+recovery_history_file() {
+    printf '%s/recovery-history.jsonl\n' "${RECOVERY_HISTORY_ROOT}"
+}
+
+recovery_history_append() {
+    local record="$1"
+    local history_file
+    history_file="$(recovery_history_file)"
+
+    install -d -o root -g root -m 0700 "${RECOVERY_HISTORY_ROOT}" || return 1
 
     printf '%s\n' "${record}" >> "${history_file}" || return 1
     chmod 0600 "${history_file}" || return 1
@@ -596,6 +866,249 @@ restore_database_exists() {
     restore_superuser_query "SELECT 1 FROM pg_database WHERE datname = '$1';"
 
     [[ "${RESTORE_SQL_RESULT}" == "1" ]]
+}
+
+restore_database_owner_of() {
+    restore_superuser_query "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$1';"
+}
+
+# restore_assert_application_role_safe ROLE — the privilege flags an
+# application role must not hold before a whole database is restored as it.
+#
+# A role that already existed was created by someone else, and "it can log in"
+# is not the same as "it is safe to restore a whole database as". Identical
+# list and reasoning to install-target-database's own
+# resolve_role_elevated_privileges.
+#
+# Shared rather than copied: restore-database proves it before staging a live
+# restore, and recover-host proves it before it will touch a prepared
+# replacement host at all. Two copies would eventually disagree about which
+# flags are elevated, and the disagreement would be discovered by a restore
+# running as a role that could read somebody else's database.
+restore_assert_application_role_safe() {
+    local role="$1"
+
+    restore_superuser_query "SELECT 1 FROM pg_roles WHERE rolname = '${role}';"
+    [[ "${RESTORE_SQL_RESULT}" == "1" ]] \
+        || fail "application role ${role} does not exist"
+
+    restore_superuser_query "SELECT rolcanlogin FROM pg_roles WHERE rolname = '${role}';"
+    [[ "${RESTORE_SQL_RESULT}" == "t" ]] \
+        || fail "application role ${role} cannot log in"
+
+    restore_superuser_query "
+        SELECT trim(concat_ws(' ',
+            CASE WHEN rolsuper       THEN 'SUPERUSER'   END,
+            CASE WHEN rolcreatedb    THEN 'CREATEDB'    END,
+            CASE WHEN rolcreaterole  THEN 'CREATEROLE'  END,
+            CASE WHEN rolreplication THEN 'REPLICATION' END,
+            CASE WHEN rolbypassrls   THEN 'BYPASSRLS'   END))
+        FROM pg_roles WHERE rolname = '${role}';
+    "
+
+    [[ -z "${RESTORE_SQL_RESULT}" ]] \
+        || fail "application role ${role} holds elevated privileges (${RESTORE_SQL_RESULT}) — refusing to restore a database as it"
+}
+
+# restore_application_query DATABASE ROLE SQL — one scalar, read over TCP as
+# the application role with exactly the credentials the application itself
+# uses. PGPASSWORD keeps the secret out of the argument vector; it is never
+# logged, never written to state, and never compared against anything but
+# emptiness.
+#
+# Captured by the CALLER with $(...) and checked with `|| fail`, so a failure
+# aborts in the caller's own shell rather than inside a subshell. Requires
+# restore_resolve_credentials to have run.
+restore_application_query() {
+    local database="$1" role="$2" sql="$3"
+
+    PGPASSWORD="${ENV_DB_PASSWORD}" \
+        "${PSQL_BIN}" \
+            --no-psqlrc \
+            --no-align \
+            --tuples-only \
+            --set=ON_ERROR_STOP=1 \
+            --host="${ENV_DB_HOST}" \
+            --port="${ENV_DB_PORT}" \
+            --username="${role}" \
+            --dbname="${database}" \
+            --command="${sql}"
+}
+
+# --- target Supervisor observation --------------------------------------------
+#
+# Moved here from restore-target rather than copied into recover-host, and the
+# reason is the one restore-target already documents about itself: reading
+# Supervisor correctly is subtle enough that a second implementation would
+# eventually disagree with the first, and the disagreement would be discovered
+# by a queue worker writing to a database it should not have been able to
+# reach.
+#
+# `supervisorctl status <group>:*` reports a NON-RUNNING group through its EXIT
+# CODE as well as its output, and conflating that with a failed observation is
+# what broke the first real staging restore: the queue was stopped exactly as
+# asked, supervisorctl printed it as STOPPED, and the confirmation loop threw
+# the answer away because the command exited 3.
+#
+# The contract below is taken from the pinned supervisor 4.2.1 the host runs
+# (supervisor/supervisorctl.py, DefaultControllerPlugin.do_status):
+#
+#   0  every matched process is in a running-ish state
+#   3  LSBStatusExitStatuses.NOT_RUNNING — at least one matched process is in
+#      states.STOPPED_STATES (STOPPED, EXITED, FATAL, UNKNOWN)
+#   4  LSBStatusExitStatuses.UNKNOWN — do_status sets this both when upcheck()
+#      cannot reach supervisord and when a name matched nothing, printing
+#      "<group>: ERROR (no such group)"
+#
+# So 0 and 3 are the only codes that mean "supervisord answered, about the group
+# we asked for". Every other code is an observation failure and fails closed —
+# including 4, which is exactly the "cannot see it" case that must never be read
+# as "it is not running".
+#
+# The exit code alone is not enough, though, so the output is parsed too: every
+# non-empty line must name a process inside THIS group and carry one of
+# supervisor's own process states. That is what rejects "ERROR (no such group)",
+# a truncated response, or a line about somebody else's program even when the
+# exit code looks acceptable.
+#
+# Every function below reads SUPERVISOR_PROGRAM from the CALLER's shell — the
+# registry-resolved program name each orchestrator already holds.
+RESTORE_SUPERVISOR_RC_RUNNING=0
+RESTORE_SUPERVISOR_RC_NOT_RUNNING=3
+
+# supervisor/states.py ProcessStates, in full — the only tokens a status line
+# may carry.
+RESTORE_SUPERVISOR_STATE_PATTERN='^(STOPPED|STARTING|RUNNING|BACKOFF|STOPPING|EXITED|FATAL|UNKNOWN)$'
+
+# Set by observe_queue_program: one state token per process in the group.
+QUEUE_PROCESS_STATES=()
+QUEUE_OBSERVATION_ERROR=""
+
+# observe_queue_program — fills QUEUE_PROCESS_STATES from a VALID observation,
+# or returns non-zero with the reason in QUEUE_OBSERVATION_ERROR.
+#
+# Runs in the caller's own shell, never a command substitution: a subshell would
+# discard the array it exists to populate.
+observe_queue_program() {
+    local stdout stderr status=0 stderr_file
+
+    QUEUE_PROCESS_STATES=()
+    QUEUE_OBSERVATION_ERROR=""
+
+    # stderr is captured rather than discarded so a genuine Supervisor failure
+    # can be reported as itself instead of as an anonymous "cannot observe".
+    stderr_file="$(mktemp)" || {
+        QUEUE_OBSERVATION_ERROR="could not create a temporary file to capture supervisorctl stderr"
+
+        return 1
+    }
+
+    stdout="$("${RESTORE_SUPERVISORCTL_BIN}" status "${SUPERVISOR_PROGRAM}:*" 2>"${stderr_file}")" || status=$?
+    stderr="$(<"${stderr_file}")"
+    rm -f "${stderr_file}"
+
+    if (( status != RESTORE_SUPERVISOR_RC_RUNNING )) \
+        && (( status != RESTORE_SUPERVISOR_RC_NOT_RUNNING ))
+    then
+        QUEUE_OBSERVATION_ERROR="supervisorctl status exited ${status}$(supervisor_diagnostic "${stdout}" "${stderr}")"
+
+        return 1
+    fi
+
+    if [[ -z "${stdout//[[:space:]]/}" ]]; then
+        QUEUE_OBSERVATION_ERROR="supervisorctl status printed nothing for ${SUPERVISOR_PROGRAM}:*$(supervisor_diagnostic "${stdout}" "${stderr}")"
+
+        return 1
+    fi
+
+    local line namespec state
+    while IFS= read -r line; do
+        [[ -n "${line//[[:space:]]/}" ]] || continue
+
+        read -r namespec state _ <<<"${line}"
+
+        # make_namespec prints "group:process", or the bare name when the two
+        # are equal (a single-process program declared without numprocs).
+        if [[ "${namespec}" != "${SUPERVISOR_PROGRAM}" ]] \
+            && [[ "${namespec}" != "${SUPERVISOR_PROGRAM}:"* ]]
+        then
+            QUEUE_OBSERVATION_ERROR="supervisorctl status reported '${namespec}', which is not part of ${SUPERVISOR_PROGRAM}$(supervisor_diagnostic "${stdout}" "${stderr}")"
+
+            return 1
+        fi
+
+        if [[ ! "${state}" =~ ${RESTORE_SUPERVISOR_STATE_PATTERN} ]]; then
+            QUEUE_OBSERVATION_ERROR="supervisorctl status reported '${state:-<none>}' for ${namespec}, which is not a Supervisor process state$(supervisor_diagnostic "${stdout}" "${stderr}")"
+
+            return 1
+        fi
+
+        QUEUE_PROCESS_STATES+=("${state}")
+    done <<<"${stdout}"
+
+    (( ${#QUEUE_PROCESS_STATES[@]} > 0 )) || {
+        QUEUE_OBSERVATION_ERROR="supervisorctl status described no process in ${SUPERVISOR_PROGRAM}"
+
+        return 1
+    }
+}
+
+# supervisor_diagnostic — a short, single-line excerpt of what supervisorctl
+# actually said, for the operator. Truncated and flattened rather than dumped:
+# this reaches logs, and an unbounded paste of someone else's output is not a
+# diagnostic.
+supervisor_diagnostic() {
+    local combined
+    combined="$(printf '%s %s' "${1-}" "${2-}" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+    combined="${combined# }"
+    combined="${combined% }"
+
+    [[ -n "${combined}" ]] || return 0
+
+    printf ' (supervisorctl said: %.200s)' "${combined}"
+}
+
+# every_queue_process_is — the shared classifier. The rule is unchanged from
+# deploy's own: a group counts as being in a state only when EVERY process in it
+# reports that state, so a mixed group is never mistaken for a settled one.
+every_queue_process_is() {
+    local wanted="$1" state
+
+    observe_queue_program || return 1
+
+    for state in "${QUEUE_PROCESS_STATES[@]}"; do
+        [[ "${state}" == "${wanted}" ]] || return 1
+    done
+}
+
+# Identical classification to deploy's own queue_program_running: only a
+# program group whose every process reports RUNNING counts as running.
+# STARTING, BACKOFF, FATAL, EXITED and STOPPED are all "not running".
+queue_program_running() {
+    every_queue_process_is RUNNING
+}
+
+# The mirror image, and the one a quiesce decision is actually made on:
+# every process must report STOPPED. A group where some processes are STOPPED
+# and others are RUNNING, STARTING or BACKOFF is NOT stopped — one live worker
+# is one live database writer, and "not fully running" must never be mistaken
+# for "safe to swap data underneath".
+queue_program_fully_stopped() {
+    every_queue_process_is STOPPED
+}
+
+wait_for_queue_state() {
+    local predicate="$1" attempt
+
+    for ((attempt = 1; attempt <= RESTORE_QUEUE_WAIT_ATTEMPTS; attempt++)); do
+        if "${predicate}"; then
+            return 0
+        fi
+
+        sleep "${RESTORE_QUEUE_RETRY_DELAY}"
+    done
+
+    "${predicate}"
 }
 
 # --- derived database names ---------------------------------------------------

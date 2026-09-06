@@ -320,169 +320,17 @@ maintenance_active() {
 
 # --- Supervisor status observation ------------------------------------------------
 #
-# `supervisorctl status <group>:*` reports a NON-RUNNING group through its EXIT
-# CODE as well as its output, and conflating that with a failed observation is
-# what broke the first real staging restore: the queue was stopped exactly as
-# asked, supervisorctl printed it as STOPPED, and the confirmation loop threw
-# the answer away because the command exited 3.
+# observe_queue_program, supervisor_diagnostic, every_queue_process_is,
+# queue_program_running, queue_program_fully_stopped and wait_for_queue_state
+# all live in restore-common, and read the SUPERVISOR_PROGRAM this script
+# resolved from the registry above.
 #
-# The contract below is taken from the pinned supervisor 4.2.1 the host runs
-# (supervisor/supervisorctl.py, DefaultControllerPlugin.do_status):
-#
-#   0  every matched process is in a running-ish state
-#   3  LSBStatusExitStatuses.NOT_RUNNING — at least one matched process is in
-#      states.STOPPED_STATES (STOPPED, EXITED, FATAL, UNKNOWN)
-#   4  LSBStatusExitStatuses.UNKNOWN — do_status sets this both when upcheck()
-#      cannot reach supervisord and when a name matched nothing, printing
-#      "<group>: ERROR (no such group)"
-#
-# So 0 and 3 are the only codes that mean "supervisord answered, about the group
-# we asked for". Every other code is an observation failure and fails closed —
-# including 4, which is exactly the "cannot see it" case that must never be read
-# as "it is not running".
-#
-# The exit code alone is not enough, though, so the output is parsed too: every
-# non-empty line must name a process inside THIS group and carry one of
-# supervisor's own process states. That is what rejects "ERROR (no such group)",
-# a truncated response, or a line about somebody else's program even when the
-# exit code looks acceptable.
-RESTORE_SUPERVISOR_RC_RUNNING=0
-RESTORE_SUPERVISOR_RC_NOT_RUNNING=3
-
-# supervisor/states.py ProcessStates, in full — the only tokens a status line
-# may carry.
-RESTORE_SUPERVISOR_STATE_PATTERN='^(STOPPED|STARTING|RUNNING|BACKOFF|STOPPING|EXITED|FATAL|UNKNOWN)$'
-
-# Set by observe_queue_program: one state token per process in the group.
-QUEUE_PROCESS_STATES=()
-QUEUE_OBSERVATION_ERROR=""
-
-# observe_queue_program — fills QUEUE_PROCESS_STATES from a VALID observation,
-# or returns non-zero with the reason in QUEUE_OBSERVATION_ERROR.
-#
-# Runs in the caller's own shell, never a command substitution: a subshell would
-# discard the array it exists to populate.
-observe_queue_program() {
-    local stdout stderr status=0 stderr_file
-
-    QUEUE_PROCESS_STATES=()
-    QUEUE_OBSERVATION_ERROR=""
-
-    # stderr is captured rather than discarded so a genuine Supervisor failure
-    # can be reported as itself instead of as an anonymous "cannot observe".
-    stderr_file="$(mktemp)" || {
-        QUEUE_OBSERVATION_ERROR="could not create a temporary file to capture supervisorctl stderr"
-
-        return 1
-    }
-
-    stdout="$("${RESTORE_SUPERVISORCTL_BIN}" status "${SUPERVISOR_PROGRAM}:*" 2>"${stderr_file}")" || status=$?
-    stderr="$(<"${stderr_file}")"
-    rm -f "${stderr_file}"
-
-    if (( status != RESTORE_SUPERVISOR_RC_RUNNING )) \
-        && (( status != RESTORE_SUPERVISOR_RC_NOT_RUNNING ))
-    then
-        QUEUE_OBSERVATION_ERROR="supervisorctl status exited ${status}$(supervisor_diagnostic "${stdout}" "${stderr}")"
-
-        return 1
-    fi
-
-    if [[ -z "${stdout//[[:space:]]/}" ]]; then
-        QUEUE_OBSERVATION_ERROR="supervisorctl status printed nothing for ${SUPERVISOR_PROGRAM}:*$(supervisor_diagnostic "${stdout}" "${stderr}")"
-
-        return 1
-    fi
-
-    local line namespec state
-    while IFS= read -r line; do
-        [[ -n "${line//[[:space:]]/}" ]] || continue
-
-        read -r namespec state _ <<<"${line}"
-
-        # make_namespec prints "group:process", or the bare name when the two
-        # are equal (a single-process program declared without numprocs).
-        if [[ "${namespec}" != "${SUPERVISOR_PROGRAM}" ]] \
-            && [[ "${namespec}" != "${SUPERVISOR_PROGRAM}:"* ]]
-        then
-            QUEUE_OBSERVATION_ERROR="supervisorctl status reported '${namespec}', which is not part of ${SUPERVISOR_PROGRAM}$(supervisor_diagnostic "${stdout}" "${stderr}")"
-
-            return 1
-        fi
-
-        if [[ ! "${state}" =~ ${RESTORE_SUPERVISOR_STATE_PATTERN} ]]; then
-            QUEUE_OBSERVATION_ERROR="supervisorctl status reported '${state:-<none>}' for ${namespec}, which is not a Supervisor process state$(supervisor_diagnostic "${stdout}" "${stderr}")"
-
-            return 1
-        fi
-
-        QUEUE_PROCESS_STATES+=("${state}")
-    done <<<"${stdout}"
-
-    (( ${#QUEUE_PROCESS_STATES[@]} > 0 )) || {
-        QUEUE_OBSERVATION_ERROR="supervisorctl status described no process in ${SUPERVISOR_PROGRAM}"
-
-        return 1
-    }
-}
-
-# supervisor_diagnostic — a short, single-line excerpt of what supervisorctl
-# actually said, for the operator. Truncated and flattened rather than dumped:
-# this reaches logs, and an unbounded paste of someone else's output is not a
-# diagnostic.
-supervisor_diagnostic() {
-    local combined
-    combined="$(printf '%s %s' "${1-}" "${2-}" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
-    combined="${combined# }"
-    combined="${combined% }"
-
-    [[ -n "${combined}" ]] || return 0
-
-    printf ' (supervisorctl said: %.200s)' "${combined}"
-}
-
-# every_queue_process_is — the shared classifier. The rule is unchanged from
-# deploy's own: a group counts as being in a state only when EVERY process in it
-# reports that state, so a mixed group is never mistaken for a settled one.
-every_queue_process_is() {
-    local wanted="$1" state
-
-    observe_queue_program || return 1
-
-    for state in "${QUEUE_PROCESS_STATES[@]}"; do
-        [[ "${state}" == "${wanted}" ]] || return 1
-    done
-}
-
-# Identical classification to deploy's own queue_program_running: only a
-# program group whose every process reports RUNNING counts as running.
-# STARTING, BACKOFF, FATAL, EXITED and STOPPED are all "not running".
-queue_program_running() {
-    every_queue_process_is RUNNING
-}
-
-# The mirror image, and the one the quiesce decision is actually made on:
-# every process must report STOPPED. A group where some processes are STOPPED
-# and others are RUNNING, STARTING or BACKOFF is NOT stopped — one live worker
-# is one live database writer, and "not fully running" must never be mistaken
-# for "safe to swap data underneath".
-queue_program_fully_stopped() {
-    every_queue_process_is STOPPED
-}
-
-wait_for_queue_state() {
-    local predicate="$1" attempt
-
-    for ((attempt = 1; attempt <= RESTORE_QUEUE_WAIT_ATTEMPTS; attempt++)); do
-        if "${predicate}"; then
-            return 0
-        fi
-
-        sleep "${RESTORE_QUEUE_RETRY_DELAY}"
-    done
-
-    "${predicate}"
-}
+# They are shared rather than local because recover-host needs the identical
+# reading of `supervisorctl status`, and the exit-code contract behind it is
+# subtle enough that a second copy would eventually disagree with this one —
+# the same argument this script already makes about not letting `deploy`
+# re-derive the "still held" proof. See restore-common for the supervisor 4.2.1
+# exit codes and why 4 must never be read as "not running".
 
 scheduler_file_present() {
     [[ -f "${SCHEDULER_FILE}" ]] && [[ ! -L "${SCHEDULER_FILE}" ]]
@@ -1613,7 +1461,7 @@ perform_restore() {
     # mistaken re-run leaves no new state behind at all — and long before the
     # emergency "pre-restore" backup would have snapshotted that mismatch.
     step "check restore hold"
-    assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a new restore"
+    assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a new restore"
 
     step "create operation workspace"
     OPERATION_ID="$(generate_operation_id)"

@@ -1272,7 +1272,14 @@ function buildBackupFixture(string $namespaceRoot, string $timestamp, array $opt
         file_put_contents($dir.'/storage-app.tar.gz', $options['storage_archive_bytes']);
     }
 
-    file_put_contents($dir.'/environment.env', "APP_ENV=staging\nDB_PASSWORD=from-backup-never-applied\n");
+    // A live restore never applies this file, so its default content is
+    // deliberately unlike any real .env. A host recovery COMPARES it against
+    // the prepared host's own shared/.env and refuses on a difference, so that
+    // fixture passes the identical bytes through this option.
+    file_put_contents(
+        $dir.'/environment.env',
+        $options['environment'] ?? "APP_ENV=staging\nDB_PASSWORD=from-backup-never-applied\n",
+    );
     file_put_contents($dir.'/server-configuration.tar.gz', "fake server configuration snapshot\n");
 
     $releaseJson = array_key_exists('release_json', $options)
@@ -1409,6 +1416,19 @@ if [[ "${cmd}" =~ ALTER\ DATABASE\ \"([a-z0-9_]+)\"\ WITH\ ALLOW_CONNECTIONS\ (t
     exit 0
 fi
 
+# The row counts a database holds follow it through a rename, exactly as
+# they do in PostgreSQL. Without this the counts would be keyed to a name
+# rather than to a database, and the staged swap — whose whole point is that
+# one name comes to mean a different database — would be unobservable.
+move_counts() {
+    local from="$1" to="$2" dir
+    for dir in "${RGTEST_PG_TABLE_COUNTS:-}" "${RGTEST_PG_MIGRATION_COUNTS:-}"; do
+        [[ -n "${dir}" ]] || continue
+        [[ -f "${dir}/${from}" ]] || continue
+        mv "${dir}/${from}" "${dir}/${to}"
+    done
+}
+
 if [[ "${cmd}" =~ ALTER\ DATABASE\ \"([a-z0-9_]+)\"\ RENAME\ TO\ \"([a-z0-9_]+)\" ]]; then
     from="${BASH_REMATCH[1]}"
     to="${BASH_REMATCH[2]}"
@@ -1423,6 +1443,7 @@ if [[ "${cmd}" =~ ALTER\ DATABASE\ \"([a-z0-9_]+)\"\ RENAME\ TO\ \"([a-z0-9_]+)\
     [[ -f "${catalog}/${from}" ]] || { printf 'ERROR: no such database %s\n' "${from}" >&2; exit 1; }
     [[ ! -f "${catalog}/${to}" ]] || { printf 'ERROR: database %s already exists\n' "${to}" >&2; exit 1; }
     mv "${catalog}/${from}" "${catalog}/${to}"
+    move_counts "${from}" "${to}"
     exit 0
 fi
 
@@ -1430,13 +1451,37 @@ if [[ "${cmd}" == *"pg_terminate_backend"* ]]; then
     exit 0
 fi
 
+queried_database() {
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in --dbname=*) printf '%s' "${arg#--dbname=}" ;; esac
+    done
+}
+
+# A per-database count file wins over the flat default when one exists, so a
+# fixture can hold an EMPTY prepared database and a populated restored one at
+# the same time. With neither directory set, behaviour is exactly the flat
+# default it always was.
+count_for() {
+    local dir="$1" fallback="$2" database
+    database="$(queried_database "${@:3}")"
+
+    if [[ -n "${dir}" ]] && [[ -n "${database}" ]] && [[ -f "${dir}/${database}" ]]; then
+        cat "${dir}/${database}"
+
+        return 0
+    fi
+
+    printf '%s\n' "${fallback}"
+}
+
 if [[ "${cmd}" == *"information_schema.tables"* ]]; then
-    printf '%s\n' "${RGTEST_TABLE_COUNT:-42}"
+    count_for "${RGTEST_PG_TABLE_COUNTS:-}" "${RGTEST_TABLE_COUNT:-42}" "$@"
     exit 0
 fi
 
 if [[ "${cmd}" == *"public.migrations"* ]]; then
-    printf '%s\n' "${RGTEST_MIGRATION_COUNT:-17}"
+    count_for "${RGTEST_PG_MIGRATION_COUNTS:-}" "${RGTEST_MIGRATION_COUNT:-17}" "$@"
     exit 0
 fi
 
@@ -1489,7 +1534,27 @@ if [[ -n "${PGPASSWORD:-}" ]]; then
     printf 'pgpassword-present\n' >> "${RGTEST_PG_RESTORE_LOG}"
 fi
 cat >/dev/null
-exit "${RGTEST_PG_RESTORE_EXIT:-0}"
+
+status="${RGTEST_PG_RESTORE_EXIT:-0}"
+
+# A successful restore gives the target database the row counts the dump
+# carried, so "the staged database holds the backup's data" is observable
+# rather than assumed. Only when the fixture asked for per-database counts.
+if [[ "${status}" == 0 ]]; then
+    database=""
+    for arg in "$@"; do
+        case "${arg}" in --dbname=*) database="${arg#--dbname=}" ;; esac
+    done
+
+    if [[ -n "${database}" ]]; then
+        [[ -z "${RGTEST_PG_TABLE_COUNTS:-}" ]] \
+            || printf '%s\n' "${RGTEST_RESTORED_TABLE_COUNT:-42}" > "${RGTEST_PG_TABLE_COUNTS}/${database}"
+        [[ -z "${RGTEST_PG_MIGRATION_COUNTS:-}" ]] \
+            || printf '%s\n' "${RGTEST_RESTORED_MIGRATION_COUNT:-17}" > "${RGTEST_PG_MIGRATION_COUNTS}/${database}"
+    fi
+fi
+
+exit "${status}"
 BASH);
 
     file_put_contents($scratch.'/pg/roles', implode("\n", $options['roles'] ?? ['parity_app'])."\n");
@@ -1881,6 +1946,211 @@ BASH);
     foreach (['supervisor', 'php', 'backup', 'restore-test', 'health-check', 'pgrep'] as $log) {
         touch($scratch.'/'.$log.'.log');
     }
+}
+
+/**
+ * An rclone stub that serves exactly one fixed remote directory tree from
+ * disk, and records every argument vector it was given — so a test can prove
+ * the remote path was composed from the registry and the fixed bucket rather
+ * than from anything a caller supplied.
+ *
+ * Shared: fetch-backup's own offsite staging and the host recovery that drives
+ * it both need the identical fake remote, and two copies would drift into
+ * disagreeing about what a remote path even looks like.
+ */
+function offsiteRcloneStub(string $scratch): string
+{
+    return writeExecutable($scratch.'/bin/rclone', <<<'BASH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "rclone $*" >> "${RGTEST_RCLONE_LOG}"
+
+# rclone --config X copy SOURCE DEST [flags...]
+source_path=""
+dest_path=""
+seen_copy=false
+positional=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        copy) seen_copy=true; shift ;;
+        --config) shift 2 ;;
+        # `--stats 10s` takes a value; every other flag rclone is given here
+        # is a bare switch. Counting positionals rather than taking "the last
+        # bare token" is what keeps a flag value out of the destination path.
+        --stats) shift 2 ;;
+        --*) shift ;;
+        *)
+            if [[ "${seen_copy}" == true ]] && (( positional < 2 )); then
+                if (( positional == 0 )); then source_path="$1"; else dest_path="$1"; fi
+                positional=$(( positional + 1 ))
+            fi
+            shift
+            ;;
+    esac
+done
+
+[[ "${seen_copy}" == true ]] || exit 1
+
+# A relative destination means the argument parsing above mistook a flag
+# VALUE for a path — which would silently copy a backup into whatever
+# directory the test runner happened to be in. Fail loudly instead.
+[[ "${dest_path}" == /* ]] || {
+    printf 'ERROR: stub refuses a relative destination: %s\n' "${dest_path}" >&2
+    exit 1
+}
+
+local_source="${RGTEST_REMOTE_ROOT}/${source_path}"
+
+if [[ ! -d "${local_source}" ]]; then
+    printf 'ERROR: remote directory not found: %s\n' "${source_path}" >&2
+    exit 1
+fi
+
+cp -a "${local_source}/." "${dest_path}/"
+BASH);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Host recovery fixtures
+|--------------------------------------------------------------------------
+|
+| A recovery starts where a restore cannot: on a PREPARED but EMPTY target —
+| the PRE_DEPLOY state Prepare Host produces, with no current, no previous, no
+| releases, an empty database and a storage root whose `app` tree does not
+| exist yet because the host layout leaves Laravel's descendants to the
+| deployment pipeline.
+*/
+
+/**
+ * The environment file a prepared host carries, and — byte for byte — the
+ * `environment.env` its backup must contain. The recovery refuses on any
+ * difference, so a fixture that let the two drift would exercise the refusal
+ * instead of the recovery.
+ */
+function preparedEnvironmentContents(array $options = []): string
+{
+    return implode("\n", [
+        'APP_ENV=staging',
+        'DB_CONNECTION=pgsql',
+        'DB_HOST=127.0.0.1',
+        'DB_PORT=5432',
+        'DB_DATABASE='.($options['database'] ?? 'parity_db'),
+        'DB_USERNAME='.($options['role'] ?? 'parity_app'),
+        'DB_PASSWORD=s3cr3t-not-logged',
+        '',
+    ]);
+}
+
+/**
+ * A prepared, EMPTY replacement target: exactly what prepare-host leaves
+ * behind, and nothing a deployment would have added.
+ */
+function preparedTargetTreeFixture(string $scratch, array $options = []): string
+{
+    $root = $scratch.'/target';
+
+    mkdir($root.'/releases', 0o755, true);
+    mkdir($root.'/shared/storage', 0o755, true);
+    mkdir($root.'/locks', 0o755, true);
+    mkdir($root.'/deployments', 0o755, true);
+    mkdir($root.'/incoming', 0o755, true);
+
+    file_put_contents($root.'/shared/.env', $options['environment'] ?? preparedEnvironmentContents($options));
+
+    // The host layout stops at shared/storage: shared/storage/app is created
+    // by the first deployment, and its absence is the normal prepared shape.
+    if (($options['storage_app'] ?? false) === true) {
+        mkdir($root.'/shared/storage/app', 0o2710, true);
+    }
+
+    return $root;
+}
+
+/**
+ * The prepare-host stub a recovery runs its own prepared-host verification
+ * through. Records its argv, and fails on demand so the "this machine is not
+ * prepared" refusal can be exercised without a real bootstrap.
+ */
+function installFakePrepareHost(string $scratch): string
+{
+    touch($scratch.'/prepare-host.log');
+
+    return writeExecutable($scratch.'/bin/prepare-host-stub', <<<'BASH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s
+' "prepare-host $*" >> "${RGTEST_PREPARE_HOST_LOG}"
+[[ "${RGTEST_PREPARE_HOST_EXIT:-0}" == 0 ]] || {
+    printf 'SLICE bootstrap — FAIL
+' >&2
+    exit "${RGTEST_PREPARE_HOST_EXIT}"
+}
+printf 'TARGET PREPARED: YES
+'
+BASH);
+}
+
+/**
+ * A real offsite remote for the recovery to download from: one backup, in the
+ * exact layout the fixed remote path composes, whose environment.env matches
+ * the prepared host's shared/.env byte for byte.
+ */
+function recoveryOffsiteBackupFixture(string $scratch, string $backupId = '20260115-023000', array $options = []): string
+{
+    $remoteRoot = $scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity';
+    mkdir($remoteRoot, 0o755, true);
+
+    return buildBackupFixture($remoteRoot, $backupId, array_merge([
+        'environment' => preparedEnvironmentContents(),
+    ], $options));
+}
+
+/**
+ * Every override a recover-host invocation needs on top of infraScriptEnv:
+ * the four backup primitives it drives (patched, so they run without root),
+ * the prepare-host verification it delegates to, the fake offsite remote, and
+ * the per-database row counts that make "empty" and "restored" distinguishable.
+ *
+ * @return array<string, string>
+ */
+function recoveryEnv(string $scratch): array
+{
+    @mkdir($scratch.'/pg/tables', 0o755, true);
+    @mkdir($scratch.'/pg/migrations', 0o755, true);
+
+    return [
+        'RATEGURU_RECOVERY_HISTORY_ROOT' => $scratch.'/recoveries',
+        'RATEGURU_RECOVER_PREPARE_HOST_BIN' => $scratch.'/bin/prepare-host-stub',
+        'RGTEST_PREPARE_HOST_LOG' => $scratch.'/prepare-host.log',
+
+        'RATEGURU_RESTORE_FETCH_BACKUP_BIN' => patchedInfraScript($scratch, 'fetch-backup'),
+        'RATEGURU_RESTORE_VERIFY_BACKUP_BIN' => patchedInfraScript($scratch, 'verify-backup'),
+        'RATEGURU_RESTORE_DATABASE_BIN' => patchedInfraScript($scratch, 'restore-database'),
+        'RATEGURU_RESTORE_STORAGE_BIN' => patchedInfraScript($scratch, 'restore-storage'),
+
+        'RATEGURU_RCLONE_BIN' => $scratch.'/bin/rclone',
+        'RATEGURU_RCLONE_CONFIG' => $scratch.'/rclone.conf',
+        'RGTEST_RCLONE_LOG' => $scratch.'/rclone.log',
+        'RGTEST_REMOTE_ROOT' => $scratch.'/remote',
+
+        'RGTEST_PG_TABLE_COUNTS' => $scratch.'/pg/tables',
+        'RGTEST_PG_MIGRATION_COUNTS' => $scratch.'/pg/migrations',
+    ];
+}
+
+/** The recovery guard document, or null when the target carries none. */
+function recoveryGuard(string $scratch): ?array
+{
+    $path = $scratch.'/run/recoveries/parity-target/recovery-guard';
+
+    return File::exists($path) ? json_decode(File::get($path), true) : null;
+}
+
+/** @return array<string, mixed> */
+function recoveryOperationState(string $scratch, string $operationId): array
+{
+    return json_decode(File::get($scratch.'/run/recoveries/parity-target/'.$operationId.'/state.json'), true);
 }
 
 /** @return array<string, string> */

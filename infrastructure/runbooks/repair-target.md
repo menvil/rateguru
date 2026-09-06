@@ -248,6 +248,7 @@ something else.
 | a restore guard with `status=held` | the target is intentionally held for controlled code alignment — finish that operation with the Restore workflow, `mode=continue-held` |
 | a restore guard with `status=in-progress` | a restore is running or was interrupted, so the live data state is unresolved |
 | a restore guard with `status=failed-held` | a restore failed and the live data may already have been replaced; which data state is authoritative is a manual recovery decision |
+| a recovery guard in any status | the target is a replacement host part-way through being rebuilt; finish or resolve that recovery ([`recover-host.md`](recover-host.md)) rather than converging infrastructure underneath it |
 | maintenance mode with **no** guard | an operator put the target there deliberately, and a repair never runs `artisan up` |
 | no canonical deployed release | choosing which code the target should serve is a deployment or recovery decision; "the newest directory in `releases/`" is a guess, and a wrong guess is a silent incident |
 | `HOST-REQ` from either installer | the damage is above target level — that is Prepare Host, and a target repair must never quietly become a host bootstrap |
