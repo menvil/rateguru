@@ -2474,13 +2474,28 @@ apply_gate_destinations() {
     require_real_directory "${DST_PHP_FPM_POOL_DIR}" "PHP-FPM pool directory (installed by slice 5.2 packages)"
     require_real_directory "${DST_SUPERVISOR_DIR}" "Supervisor conf.d (installed by slice 5.2 packages)"
     require_real_directory "${DST_CRON_DIR}" "cron.d"
-    require_real_directory "${DST_SSHD_DIR}" "sshd_config.d"
 
     local target_id logical phys
-    phys="$(physical "${DST_SSH_RESTRICTION}")"
-    [[ -L "${phys}" ]] && fail "destination is a symlink: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
-    if [[ -e "${phys}" ]] && [[ ! -f "${phys}" ]]; then
-        fail "destination exists but is not a regular file: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+
+    # The SSH deploy restriction, and the directory it lives in, are gated only
+    # in host mode — the one mode that installs them.
+    #
+    # A target-scoped run neither reports, verifies nor converges that file, so
+    # demanding a well-formed destination for it made a target repair depend on
+    # host configuration it never touches: a damaged sshd_config.d entry,
+    # invisible in the target-mode report, would abort the apply. In
+    # combination with layout drift that is worse than an unhelpful error, it
+    # breaks the contract this whole gate exists for — every blocker known
+    # before the first mutation — because the layout would already have been
+    # converged by then.
+    if ! target_scoped; then
+        require_real_directory "${DST_SSHD_DIR}" "sshd_config.d"
+
+        phys="$(physical "${DST_SSH_RESTRICTION}")"
+        [[ -L "${phys}" ]] && fail "destination is a symlink: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+        if [[ -e "${phys}" ]] && [[ ! -f "${phys}" ]]; then
+            fail "destination exists but is not a regular file: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+        fi
     fi
 
     for target_id in "${ACTIVE_TARGETS[@]}"; do

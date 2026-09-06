@@ -2342,3 +2342,81 @@ it('refuses a target apply when a base service is stopped, and never starts it',
         bsvcCleanup($scratch);
     }
 });
+
+it('repairs a target while the host SSH restriction is damaged, and never touches it', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        $restriction = $scratch.'/fs/etc/ssh/sshd_config.d/70-rateguru-deploy.conf';
+        $decoy = $scratch.'/fs/etc/ssh/elsewhere.conf';
+
+        // A host-global SSH problem that has nothing to do with this target:
+        // the deploy restriction is a symlink where a regular file belongs.
+        file_put_contents($decoy, "Match User deploy-rateguru-staging\n");
+        unlink($restriction);
+        symlink($decoy, $restriction);
+
+        // ...and drift that IS this target's, so the run has something to do.
+        $enabled = $scratch.'/fs/etc/nginx/sites-enabled/rateguru-staging';
+        @unlink($enabled);
+
+        [$checkExit, $checkOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($checkExit)->toBe(1, $checkOutput);
+        expect($checkOutput)->not->toContain('70-rateguru-deploy.conf');
+        expect($checkOutput)->not->toContain('sshd_config.d');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        // The point of the whole mode: a target repair does not depend on host
+        // configuration it never reads, reports or converges.
+        expect($applyExit)->toBe(0, "a damaged host SSH restriction must not block a target repair:\n{$applyOutput}");
+        expect(is_link($enabled))->toBeTrue('the target site was not re-enabled');
+
+        // And the damaged file is exactly as it was found.
+        expect(is_link($restriction))->toBeTrue('the target apply replaced the host SSH restriction');
+        expect(readlink($restriction))->toBe($decoy);
+        expect(bsvcLog($scratch, 'install.log'))->not->toContain('70-rateguru-deploy.conf');
+        expect(bsvcLog($scratch, 'sshd.log'))->toBe('');
+
+        // Host mode still owns it, and still refuses the same damage.
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->not->toBe(0);
+        expect($hostOutput)->toContain('70-rateguru-deploy.conf');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('repairs a target on a host with no sshd_config.d at all', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // The directory the SSH restriction lives in is gone entirely. In host
+        // mode that is a hard prerequisite; a target-scoped run installs
+        // nothing there and must not care.
+        exec('rm -rf '.escapeshellarg($scratch.'/fs/etc/ssh/sshd_config.d'));
+
+        $enabled = $scratch.'/fs/etc/nginx/sites-enabled/rateguru-staging';
+        @unlink($enabled);
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->toBe(0, "a missing sshd_config.d must not block a target repair:\n{$applyOutput}");
+        expect(is_link($enabled))->toBeTrue();
+        expect(is_dir($scratch.'/fs/etc/ssh/sshd_config.d'))->toBeFalse('the target apply created a host SSH directory');
+
+        // Host mode still requires it.
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->not->toBe(0);
+        expect($hostOutput)->toContain('sshd_config.d');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});

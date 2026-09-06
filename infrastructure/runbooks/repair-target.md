@@ -156,6 +156,26 @@ Without `--target`, both installers are exactly the host bootstrap they have
 always been. That is the first property the test suite asserts for each of them,
 before anything about the new mode.
 
+### What a target repair does not depend on
+
+The SSH deploy restriction is not reported, not verified and not converged in
+target mode — and, as of this fix, its destination is not gated either. A
+damaged `sshd_config.d` entry is invisible in the target-mode report, so
+demanding a well-formed destination for it meant a host problem the operator
+was never shown could abort the apply. With layout drift also present that is
+worse than an unhelpful error: the layout would already have been converged,
+breaking the one rule the gate exists for.
+
+The destination directories that ARE gated are the ones a target repair
+actually writes into: Nginx sites-available and sites-enabled, the PHP-FPM pool
+directory, Supervisor conf.d and cron.d.
+
+The committed sources are a separate matter and stay gated in both modes. They
+are files in the trusted bundle rather than host state, so they cannot be
+broken by the host and cannot surprise a run mid-flight — and an incomplete
+bundle is a reason to stop everything, because the same corruption may have
+reached files the repair does use.
+
 ### Why a base service is checked for both halves
 
 The prerequisite asks whether each base service is **enabled and active**, not
