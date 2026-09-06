@@ -379,24 +379,50 @@ it('activates no production target, provisions nothing and changes no DNS', func
 // The blast radius of this phase
 // =============================================================================
 
-it('leaves the accepted backup subsystem and the 7.3 restore primitives untouched', function () {
+it('keeps the operator surface out of the primitives that swap the data', function () {
+    // The restore mechanics were accepted on a real destructive staging run.
+    // The operator surface adds --inspect and one machine-readable result line
+    // to restore-target, and NOTHING to the primitives underneath it.
+    //
+    // Asserted as an end state rather than as a diff. Expressed as "these files
+    // did not change", this guard fired on every later branch that touched a
+    // primitive for a reason of its own — which is how a guard stops describing
+    // its own subject and starts blocking work it has no opinion about.
+    foreach ([
+        'backup',
+        'backup-cycle',
+        'offsite-backup',
+        'offsite-retention',
+        'offsite-restore-test',
+        'restore-test',
+        'fetch-backup',
+        'verify-backup',
+        'restore-database',
+        'restore-storage',
+    ] as $primitive) {
+        $source = executableSourceLines(File::get(base_path('infrastructure/scripts/'.$primitive)));
+
+        foreach ([
+            'RATEGURU_RESTORE_RESULT',
+            'continue-held',
+            '--inspect',
+            'assert_restore_alignment_operation',
+            'assert_runtime_still_held',
+            'workflow_dispatch',
+        ] as $operatorSurface) {
+            expect($source)->not->toContain(
+                $operatorSurface,
+                "{$primitive} must carry no operator surface: {$operatorSurface}",
+            );
+        }
+    }
+
+    // The configuration stays diff-bounded, because nothing on the restore side
+    // ever has a legitimate reason to change a cron entry, the queue program or
+    // the registry.
     $changed = branchChangedCodeFiles();
 
-    // The restore mechanics themselves were accepted on a real destructive
-    // staging run. The operator surface adds --inspect and a machine-readable result line to
-    // restore-target; it must not touch the primitives that swap the data.
-    // (toContain is variadic in Pest, so no message argument here.)
     foreach ([
-        'infrastructure/scripts/backup',
-        'infrastructure/scripts/backup-cycle',
-        'infrastructure/scripts/offsite-backup',
-        'infrastructure/scripts/offsite-retention',
-        'infrastructure/scripts/offsite-restore-test',
-        'infrastructure/scripts/restore-test',
-        'infrastructure/scripts/fetch-backup',
-        'infrastructure/scripts/verify-backup',
-        'infrastructure/scripts/restore-database',
-        'infrastructure/scripts/restore-storage',
         'infrastructure/config/cron/rateguru-backups',
         'infrastructure/config/supervisor/rateguru-staging-queue.conf',
         'infrastructure/config/cron/rateguru-staging-scheduler',

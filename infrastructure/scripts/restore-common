@@ -251,17 +251,6 @@ RESTORE_OPERATION_NAMESPACES=(
     "${RESTORE_OPERATION_NAMESPACE_HOST_RECOVERY}"
 )
 
-restore_namespace_for_kind() {
-    case "${1-}" in
-        "${RESTORE_OPERATION_KIND_TARGET_RESTORE}")
-            printf '%s\n' "${RESTORE_OPERATION_NAMESPACE_TARGET_RESTORE}" ;;
-        "${RESTORE_OPERATION_KIND_HOST_RECOVERY}")
-            printf '%s\n' "${RESTORE_OPERATION_NAMESPACE_HOST_RECOVERY}" ;;
-        *)
-            return 1 ;;
-    esac
-}
-
 restore_assert_operation_namespace() {
     local namespace="${1-}" known
 
@@ -283,14 +272,6 @@ restore_assert_operation_namespace() {
 # No operator-supplied filesystem path reaches any of these functions. The
 # target ID has already passed common's validate_target_id (a closed
 # [a-z0-9-] class); the operation ID has passed validate_operation_id.
-
-restore_run_root() {
-    printf '%s/restores\n' "${RUN_ROOT}"
-}
-
-recovery_run_root() {
-    printf '%s/recoveries\n' "${RUN_ROOT}"
-}
 
 restore_namespace_run_root() {
     local namespace="$1"
