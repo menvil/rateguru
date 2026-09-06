@@ -1,0 +1,19 @@
+tests/Feature/Architecture/RestoreOperatorSurfaceScopeTest.php
+  s_5ec8651e8e89ca::t_eab871fdd5ec94 382-422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8197aa726dbe589eb679881c820e8f3b48e9811e",
+  "prompts": {},
+  "sessions": {
+    "s_5ec8651e8e89ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be186b9b-8a93-4245-bb71-a1048e59c906",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Moroz <menvil.menvil@gmail.com>"
+    }
+  }
+}
