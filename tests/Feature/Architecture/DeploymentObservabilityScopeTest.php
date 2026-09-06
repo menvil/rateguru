@@ -4,58 +4,27 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.2's own scope guard: what this phase establishes, and — more
- * importantly — the four later phases it deliberately does not begin.
+ * Prepare Host's own scope guard: what it establishes, and — more importantly —
+ * the four neighbouring operations it deliberately does not begin.
  *
- * 7.2 ends when a clean VPS can be PREPARED and a successful deployment state
- * transition is visible in both observability systems. Restore (7.3), Repair
- * (7.5) and Recover (7.6) come after it, the rejected durable-artifact archive
- * stays rejected, the backup architecture is untouched, and production stays
- * unprovisioned until Phase 8.
+ * It ends when a clean VPS can be PREPARED and a successful deployment state
+ * transition is visible in both observability systems. Restore Target Data,
+ * Repair Target and Recover Host come after it, the rejected durable-artifact
+ * archive stays rejected, the backup architecture is untouched, and production
+ * stays unprovisioned until the production launch.
  */
 
-/**
- * Every operational file a rejected architecture could sneak back into.
- *
- * PHP's glob has no `**`, so `infrastructure/config` is walked recursively
- * rather than globbed — the committed config tree is two levels deep today and
- * a guard that silently stopped at the first would be worse than no guard.
- *
- * @return list<string>
- */
-function p72OperationalFiles(): array
-{
-    $configFiles = [];
-
-    $tree = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator(base_path('infrastructure/config'), FilesystemIterator::SKIP_DOTS),
-    );
-
-    foreach ($tree as $entry) {
-        if ($entry->isFile()) {
-            $configFiles[] = $entry->getPathname();
-        }
-    }
-
-    return array_values(array_filter(array_merge(
-        glob(base_path('.github/workflows/*.yml')) ?: [],
-        glob(base_path('.github/actions/*/action.yml')) ?: [],
-        glob(base_path('infrastructure/scripts/*')) ?: [],
-        $configFiles,
-    ), 'is_file'));
-}
-
 // =============================================================================
-// What Phase 7.2 adds
+// What Prepare Host adds
 // =============================================================================
 
-it('adds exactly the operator-facing workflows Phase 7.2 is meant to add', function () {
-    // The workflows Phase 7.2 established, all of which must still exist and
+it('adds exactly the operator-facing workflows Prepare Host is meant to add', function () {
+    // The workflows Prepare Host established, all of which must still exist and
     // still be the ONLY ones covering their operation. This is deliberately a
     // containment check rather than an exact inventory: later phases add
-    // operator workflows of their own (7.4 added the two restore ones), and
+    // operator workflows of their own (the restore surface added two), and
     // each phase's guard owns the exact inventory as of itself —
-    // Phase74ScopeTest is the current one.
+    // RestoreOperatorSurfaceScopeTest is the current one.
     $workflows = collect(glob(base_path('.github/workflows/*.yml')) ?: [])
         ->map(static fn (string $path): string => basename($path))
         ->sort()
@@ -76,7 +45,7 @@ it('adds exactly the operator-facing workflows Phase 7.2 is meant to add', funct
         expect($workflows)->toContain($workflow);
     }
 
-    // What 7.2 rejected, and every later phase inherits: one generic
+    // What host preparation rejected, and everything after it inherits: one generic
     // "Operations" workflow, and per-environment duplicates of an operation
     // that already has a shared implementation.
     foreach ([
@@ -89,9 +58,9 @@ it('adds exactly the operator-facing workflows Phase 7.2 is meant to add', funct
     }
 });
 
-it('adds exactly the shared actions Phase 7.2 is meant to add', function () {
-    // Containment, for the same reason as the workflow inventory above: 7.4
-    // added restore-rateguru, and Phase74ScopeTest owns the exact list.
+it('adds exactly the shared actions Prepare Host is meant to add', function () {
+    // Containment, for the same reason as the workflow inventory above: the
+    // added restore-rateguru, and RestoreOperatorSurfaceScopeTest owns the exact list.
     $actions = collect(glob(base_path('.github/actions/*'), GLOB_ONLYDIR) ?: [])
         ->map(static fn (string $path): string => basename($path))
         ->sort()
@@ -117,7 +86,7 @@ it('adds exactly the shared actions Phase 7.2 is meant to add', function () {
 });
 
 it('keeps one implementation per operation', function () {
-    // Phase 7.1's model, extended by exactly two operations rather than
+    // the shared operation actions's model, extended by exactly two operations rather than
     // forked: one BUILD, one DEPLOY, one ROLLBACK, one PREPARE, one
     // DEPLOYMENT-RECORDING implementation, with per-environment workflows on
     // top wherever policy differs.
@@ -140,12 +109,12 @@ it('keeps one implementation per operation', function () {
 it('implements no Restore operation', function () {
     // restore-test remains what it has always been: a read-only proof that a
     // backup can be restored into a throwaway scratch database. Turning it
-    // into a live restore was Phase 7.3, and nothing 7.2 added does it.
+    // into a live restore was Restore Target Data, and nothing here does it.
     //
-    // Phase 7.3 landed the SERVER primitives (restore-target and friends) and
-    // Phase 7.4 the GitHub-facing surface; each owns its own scope guard
-    // (Phase73ScopeTest, Phase74ScopeTest). What this test still owns is 7.2's
-    // own promise: nothing 7.2 added restores anything, and no restore
+    // Restore Target Data landed the SERVER primitives (restore-target and friends) and
+    // the controlled code alignment the GitHub-facing surface; each owns its own scope guard
+    // (RestoreServerPrimitivesScopeTest, RestoreOperatorSurfaceScopeTest). What this test still owns is 7.2's
+    // own promise: nothing host preparation added restores anything, and no restore
     // implementation ever appeared under a name outside those phases.
     expect(File::exists(base_path('infrastructure/scripts/restore-test')))->toBeTrue();
 
@@ -159,7 +128,7 @@ it('implements no Restore operation', function () {
         expect(File::exists(base_path($path)))->toBeFalse("{$path} is not part of any phase's restore design");
     }
 
-    // And nothing added in 7.2 restores anything.
+    // And nothing host preparation added restores anything.
     foreach ([
         'infrastructure/scripts/prepare-host',
         'infrastructure/scripts/install-target-prerequisites',
@@ -190,7 +159,7 @@ it('implements no Recover operation', function () {
         '.github/workflows/recover-production-host.yml',
         '.github/actions/recover-rateguru-host/action.yml',
     ] as $path) {
-        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to Phase 7.6/7.7, not 7.2");
+        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to Recover Host/7.7, not 7.2");
     }
 
     // Recovery rebuilds an application from the source SHA a backup carries.
@@ -204,7 +173,7 @@ it('implements no Recover operation', function () {
 // =============================================================================
 
 it('adds no durable release-artifact archive', function () {
-    foreach (p72OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         $source = File::get($path);
 
         foreach ([
@@ -227,14 +196,14 @@ it('adds no durable release-artifact archive', function () {
 });
 
 it('leaves the backup architecture and its manifest schema untouched', function () {
-    // Phase 7.2 promised not to redesign backups, and this is what that means
+    // Prepare Host promised not to redesign backups, and this is what that means
     // in terms anyone can check on any branch: the artifact contract and the
     // manifest schema are still the ones that shipped before it.
     //
     // This was originally a git diff of the branch against its base, which
-    // only expressed the promise while the branch under test WAS Phase 7.2.
+    // only expressed the promise while the branch under test WAS Prepare Host.
     // From a later branch it asserted something else entirely — that no
-    // subsequent phase may touch a backup file — and Phase 7.3 legitimately
+    // subsequent phase may touch a backup file — and Restore Target Data legitimately
     // does (see below). A structural guard says the intended thing from
     // anywhere.
     $backup = File::get(base_path('infrastructure/scripts/backup'));
@@ -273,7 +242,7 @@ it('leaves the backup architecture and its manifest schema untouched', function 
     }
 });
 
-it('lets Phase 7.3 add exactly one fail-closed guard to backup, and nothing else', function () {
+it('lets Restore Target Data add exactly one fail-closed guard to backup, and nothing else', function () {
     // The one deliberate change a later phase made to this path, asserted
     // positively so it cannot quietly grow into backup logic. A target held
     // after a restore has data belonging to a different commit than
@@ -298,7 +267,7 @@ it('lets Phase 7.3 add exactly one fail-closed guard to backup, and nothing else
 
 it('keeps release.json exactly as it is', function () {
     // release.release stays the operator/history identity, release.source_sha
-    // stays what a future Recover Host will rebuild from. Phase 7.2 reads both
+    // stays what a future Recover Host will rebuild from. Prepare Host reads both
     // and adds nothing.
     $metadata = File::get(base_path('app/Support/Deployment/DeploymentMetadata.php'));
 
@@ -351,8 +320,8 @@ it('manages no unrelated project on the same host', function () {
     }
 });
 
-it('does not weaken the Phase 5 or Phase 7.1 contracts', function () {
-    // Every Phase 5 primitive still exists and still owns what it owned.
+it('does not weaken the clean-host bootstrap or the shared operation actions contracts', function () {
+    // Every the clean-host bootstrap primitive still exists and still owns what it owned.
     foreach ([
         'bootstrap-host',
         'bootstrap-host-preflight',
@@ -367,14 +336,14 @@ it('does not weaken the Phase 5 or Phase 7.1 contracts', function () {
     }
 
     // bootstrap-host keeps its own three slices and its own preflight; nothing
-    // in Phase 7.2 reached into it.
+    // in Prepare Host reached into it.
     $bootstrapHost = File::get(base_path('infrastructure/scripts/bootstrap-host'));
     expect($bootstrapHost)->toContain('SLICE_IDS=(5.2 5.3 5.4)');
     expect($bootstrapHost)->not->toContain('prepare-host');
     expect($bootstrapHost)->not->toContain('install-target-database');
     expect($bootstrapHost)->not->toContain('install-target-prerequisites');
 
-    // And the deploy transport is exactly what Phase 4 established.
+    // And the deploy transport is exactly what the target-aware migration established.
     expect(File::get(base_path('.github/actions/deploy-rateguru/action.yml')))
         ->toContain('rateguru-deploy');
 });

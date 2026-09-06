@@ -18,7 +18,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 7.1: gated test overrides, following the exact
+# Gated test overrides, following the exact
 # FOO_BIN_DEFAULT/FOO_BIN + rateguru_test_overrides_allowed shape backup
 # already establishes for its own binaries. Production values are unchanged.
 BACKUP_BASE_DEFAULT="/home/www/rateguru/backups"

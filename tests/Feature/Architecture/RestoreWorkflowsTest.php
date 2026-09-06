@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.4: restore-staging.yml and restore-production.yml.
+ * the controlled code alignment: restore-staging.yml and restore-production.yml.
  *
  * These are policy files. Every mechanism they use already exists — one build,
  * one deploy, one restore, one observability marker — and the only thing they

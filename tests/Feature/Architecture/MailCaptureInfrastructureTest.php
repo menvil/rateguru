@@ -1364,7 +1364,7 @@ it('marks the mail-capture phase completed, and the phase after it too', functio
         ->toContain('## 4. Multi-target production model — completed');
 
     // At most one phase is current at a time; right now none is, because
-    // Phase 4 closed before Phase 5 implementation started.
+    // the target-aware migration closed before the clean-host bootstrap implementation started.
     expect(substr_count($roadmap, '🚧 current'))->toBeLessThanOrEqual(1);
 
     // No stale "current"/"planned" wording left on either phase.
@@ -1504,10 +1504,10 @@ it('excludes captured staging mail from disaster-recovery backups', function () 
 
     expect($runbook)->toContain('exclude');
 
-    // Phase 4 slice 7.1 moved the allowlist into
+    // moved the allowlist into
     // build_server_configuration_archive(), which builds a lowercase
     // `infra_paths=(...)` array — now the sole, target-only allowlist, since
-    // Phase 4's legacy-selector removal deleted the parallel legacy-selector
+    // the target-aware migration's legacy-selector removal deleted the parallel legacy-selector
     // copy this test used to also check — plus an empty
     // `local -a infra_paths=()` declaration above it, which the same regex
     // also matches (with an empty captured body). Filtered out here so the

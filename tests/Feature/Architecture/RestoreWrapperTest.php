@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.4: /usr/local/sbin/rateguru-restore — the ONE server-side perimeter
+ * the controlled code alignment: /usr/local/sbin/rateguru-restore — the ONE server-side perimeter
  * a restricted deploy credential can reach a restore through.
  *
  * The wrapper is deliberately not shaped like rateguru-deploy. That one
@@ -58,14 +58,14 @@ function restoreWrapperStub(string $scratch): string
  */
 function restoreWrapperRun(string $scratch, array $arguments, array $envOverrides = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
     $env = array_merge([
         'PATH' => $scratch.'/bin:'.(getenv('PATH') ?: '/usr/bin:/bin'),
         'HOME' => getenv('HOME') ?: '/tmp',
         'RATEGURU_ALLOW_TEST_OVERRIDES' => 'true',
         'RATEGURU_COMMON_FILE' => base_path('infrastructure/scripts/common'),
-        'RATEGURU_DEPLOYMENT_CONF_FILE' => p73DeploymentConf($scratch),
+        'RATEGURU_DEPLOYMENT_CONF_FILE' => deploymentConfFixture($scratch),
         'RATEGURU_TARGET_REGISTRY_FILE' => $registryPath,
         'RATEGURU_TARGETS_CLI' => $targetsPath,
         'RATEGURU_RESTORE_TARGET_BIN' => restoreWrapperStub($scratch),
@@ -84,7 +84,7 @@ function restoreWrapperRun(string $scratch, array $arguments, array $envOverride
             .'main '.implode(' ', array_map('escapeshellarg', $arguments))."\n",
     );
 
-    return p73Run($harness, [], $env);
+    return runInfraScript($harness, [], $env);
 }
 
 it('ships an executable, syntactically valid wrapper that names only the restore binary', function () {
@@ -122,7 +122,7 @@ it('requires root for a real invocation, before anything else runs', function ()
     try {
         // A genuine subprocess, so BASH_SOURCE[0] == $0 and the inline EUID
         // gate at the top of the file fires — before common is even sourced.
-        [$exit, $output] = p73Run(restoreWrapperPath(), ['--help'], [
+        [$exit, $output] = runInfraScript(restoreWrapperPath(), ['--help'], [
             'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
             'HOME' => getenv('HOME') ?: '/tmp',
         ]);

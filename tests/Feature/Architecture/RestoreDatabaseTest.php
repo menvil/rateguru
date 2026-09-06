@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3: `restore-database` — the staged PostgreSQL swap.
+ * Restore Target Data: `restore-database` — the staged PostgreSQL swap.
  *
  * Executes the real shipped infrastructure/scripts/restore-database against a
  * file-backed fake PostgreSQL (one file per database, holding owner and
@@ -23,11 +23,11 @@ function restoreDatabaseScript(): string
  */
 function restoreDatabaseRun(string $scratch, string $operationId, string $step, array $envOverrides = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-    $env = p73BaseEnv($scratch, $registryPath, $targetsPath, array_merge(p73PostgresEnv($scratch), $envOverrides));
+    $env = infraScriptEnv($scratch, $registryPath, $targetsPath, array_merge(fakePostgresEnv($scratch), $envOverrides));
 
-    [$exit, $output] = p73Run(p73PatchedScript($scratch, 'restore-database'), [
+    [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'restore-database'), [
         '--target', 'parity-target', '--operation', $operationId, '--'.$step,
     ], $env);
 
@@ -40,11 +40,11 @@ function restoreDatabaseRun(string $scratch, string $operationId, string $step, 
  */
 function restoreDatabaseFixture(string $scratch, array $options = []): string
 {
-    p73TargetTree($scratch);
-    p73FakePostgres($scratch, $options);
+    targetTreeFixture($scratch);
+    installFakePostgres($scratch, $options);
 
     $operationId = $options['operation'] ?? '20260115-120000-abc123';
-    p73Workspace($scratch, $operationId, $options['state'] ?? []);
+    restoreWorkspaceFixture($scratch, $operationId, $options['state'] ?? []);
 
     return $operationId;
 }
@@ -54,7 +54,7 @@ function restoreDatabaseFixture(string $scratch, array $options = []): string
 // =============================================================================
 
 it('stages the backup into a new temporary database and leaves the live one untouched', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
@@ -63,9 +63,9 @@ it('stages the backup into a new temporary database and leaves the live one unto
 
         expect($result['exit'])->toBe(0, $result['output']);
 
-        $staged = p73StagedDatabase($operation);
+        $staged = stagedDatabaseName($operation);
 
-        expect(p73Databases($scratch))->toBe(['parity_db', $staged]);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db', $staged]);
 
         // Created from template0, owned by the application role.
         expect(File::get($scratch.'/createdb.log'))
@@ -93,37 +93,37 @@ it('stages the backup into a new temporary database and leaves the live one unto
         expect(File::get($scratch.'/dropdb.log'))->toBe('');
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
 
-        $state = p73State($scratch.'/run/restores/parity-target/'.$operation);
+        $state = restoreOperationState($scratch.'/run/restores/parity-target/'.$operation);
         expect($state['phase'])->toBe('database-staged');
         expect($state['staged_database'])->toBe($staged);
-        expect($state['pre_restore_database'])->toBe(p73PreRestoreDatabase($operation));
+        expect($state['pre_restore_database'])->toBe(preRestoreDatabaseName($operation));
         expect($state['staged_tables'])->toBe('42');
         expect($state['staged_migrations'])->toBe('17');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('leaves the live database untouched and drops the temporary one when pg_restore fails', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
 
-        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['P73_PG_RESTORE_EXIT' => '3']);
+        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['RGTEST_PG_RESTORE_EXIT' => '3']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('the live database parity_db was never touched');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
-        expect(File::get($scratch.'/dropdb.log'))->toContain(p73StagedDatabase($operation));
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
+        expect(File::get($scratch.'/dropdb.log'))->toContain(stagedDatabaseName($operation));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('rejects a staged database with no public tables, or an unreadable migrations table', function (array $env, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
@@ -133,35 +133,35 @@ it('rejects a staged database with no public tables, or an unreadable migrations
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain($expected);
 
-        expect(p73Databases($scratch))->toBe(['parity_db'], 'the staged database must be dropped');
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db'], 'the staged database must be dropped');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
-    'no tables' => [['P73_TABLE_COUNT' => '0'], 'staged database contains no public tables'],
-    'unreadable migration count' => [['P73_MIGRATION_COUNT' => 'not-a-number'], 'unable to determine the staged migrations table row count'],
+    'no tables' => [['RGTEST_TABLE_COUNT' => '0'], 'staged database contains no public tables'],
+    'unreadable migration count' => [['RGTEST_MIGRATION_COUNT' => 'not-a-number'], 'unable to determine the staged migrations table row count'],
 ]);
 
 it('refuses to restore as an application role holding elevated privileges', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
 
-        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['P73_ROLE_ELEVATED' => 'SUPERUSER']);
+        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['RGTEST_ROLE_ELEVATED' => 'SUPERUSER']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('holds elevated privileges (SUPERUSER)');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(File::get($scratch.'/createdb.log'))->toBe('', 'nothing may be created for an unsafe role');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to stage when the application role cannot log in or does not exist', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['roles' => ['someone_else']]);
@@ -171,31 +171,31 @@ it('refuses to stage when the application role cannot log in or does not exist',
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('application role parity_app does not exist');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
 
-        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['P73_ROLE_CANLOGIN' => 'f']);
+        $result = restoreDatabaseRun($scratch, $operation, 'stage', ['RGTEST_ROLE_CANLOGIN' => 'f']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('cannot log in');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to stage when the registry and shared/.env disagree about the database or the role', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73TargetTree($scratch, ['database' => 'a_different_db']);
-        p73FakePostgres($scratch);
+        targetTreeFixture($scratch, ['database' => 'a_different_db']);
+        installFakePostgres($scratch);
         $operation = '20260115-120000-abc123';
-        p73Workspace($scratch, $operation);
+        restoreWorkspaceFixture($scratch, $operation);
 
         $result = restoreDatabaseRun($scratch, $operation, 'stage');
 
@@ -203,12 +203,12 @@ it('refuses to stage when the registry and shared/.env disagree about the databa
         expect($result['output'])->toContain('drift: the registry declares database parity_db');
         expect($result['output'])->toContain('resolve the mismatch manually; nothing was changed');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to stage when the target database does not exist — a restore is not a provisioning step', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['databases' => []]);
@@ -218,7 +218,7 @@ it('refuses to stage when the target database does not exist — a restore is no
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('this is a data restore, not a target provisioning step');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -227,7 +227,7 @@ it('refuses to stage when the target database does not exist — a restore is no
 // =============================================================================
 
 it('blocks connections, renames the live database aside and renames the staged one in', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
@@ -235,16 +235,16 @@ it('blocks connections, renames the live database aside and renames the staged o
         expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
 
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
-        p73SetPhase($workspace, 'emergency-backup-verified');
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
 
         $result = restoreDatabaseRun($scratch, $operation, 'activate');
         expect($result['exit'])->toBe(0, $result['output']);
 
-        $pre = p73PreRestoreDatabase($operation);
+        $pre = preRestoreDatabaseName($operation);
 
         // The staged database now carries the canonical name; the previous
         // one is retained, still blocked to connections.
-        expect(p73Databases($scratch))->toBe(['parity_db', $pre]);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db', $pre]);
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
         expect(trim(File::get($scratch.'/pg/db/'.$pre)))->toBe('parity_app f');
 
@@ -263,14 +263,14 @@ it('blocks connections, renames the live database aside and renames the staged o
         // Scoped to this database only — never a host-wide disconnect.
         expect($psql)->toContain("datname = 'parity_db'");
 
-        expect(p73State($workspace)['phase'])->toBe('database-activated');
+        expect(restoreOperationState($workspace)['phase'])->toBe('database-activated');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to activate a staged database that does not exist', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['state' => ['phase' => 'emergency-backup-verified']]);
@@ -279,9 +279,9 @@ it('refuses to activate a staged database that does not exist', function () {
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('staged restore database is missing');
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -290,14 +290,14 @@ it('refuses to activate a staged database that does not exist', function () {
 // =============================================================================
 
 it('reverses a completed swap, putting the pre-restore database back under the canonical name', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
 
         expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'emergency-backup-verified');
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
         expect(restoreDatabaseRun($scratch, $operation, 'activate')['exit'])->toBe(0);
 
         // A genuinely distinguishing marker on the ORIGINAL database, so
@@ -305,56 +305,56 @@ it('reverses a completed swap, putting the pre-restore database back under the c
         // The fake catalog stores "<owner> <allowconn>", and a compensation
         // that merely renamed the RESTORED database back would leave the
         // restored owner value in place instead of this one.
-        file_put_contents($scratch.'/pg/db/'.p73PreRestoreDatabase($operation), "the_original_database f\n");
+        file_put_contents($scratch.'/pg/db/'.preRestoreDatabaseName($operation), "the_original_database f\n");
 
         $result = restoreDatabaseRun($scratch, $operation, 'compensate');
         expect($result['exit'])->toBe(0, $result['output']);
 
-        expect(p73Databases($scratch))->toBe(['parity_db', p73StagedDatabase($operation)]);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db', stagedDatabaseName($operation)]);
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('the_original_database t');
-        expect(trim(File::get($scratch.'/pg/db/'.p73StagedDatabase($operation))))->toBe('parity_app f');
+        expect(trim(File::get($scratch.'/pg/db/'.stagedDatabaseName($operation))))->toBe('parity_app f');
         expect($result['output'])->toContain('swap reversed');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('restores the original database when activation stopped between the two renames', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
-        $staged = p73StagedDatabase($operation);
-        $pre = p73PreRestoreDatabase($operation);
+        $staged = stagedDatabaseName($operation);
+        $pre = preRestoreDatabaseName($operation);
 
         expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'emergency-backup-verified');
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
 
         // The second rename fails: the live name is gone, the original is
         // parked under the pre-restore name, the staged one still exists.
         $activation = restoreDatabaseRun($scratch, $operation, 'activate', [
-            'P73_RENAME_FAIL' => $staged.'->parity_db',
+            'RGTEST_RENAME_FAIL' => $staged.'->parity_db',
         ]);
 
         expect($activation['exit'])->not->toBe(0);
-        expect(p73Databases($scratch))->toBe([$pre, $staged]);
+        expect(fakePostgresDatabases($scratch))->toBe([$pre, $staged]);
 
-        p73SetPhase($workspace, 'database-activated');
+        setRestoreOperationPhase($workspace, 'database-activated');
 
         $result = restoreDatabaseRun($scratch, $operation, 'compensate');
         expect($result['exit'])->toBe(0, $result['output']);
 
-        expect(p73Databases($scratch))->toBe(['parity_db', $staged]);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db', $staged]);
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
         expect($result['output'])->toContain('original database restored');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('does nothing, and re-enables connections, when the swap never happened', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['state' => ['phase' => 'database-activated']]);
@@ -368,12 +368,12 @@ it('does nothing, and re-enables connections, when the swap never happened', fun
         expect($result['output'])->toContain('nothing to undo');
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('fails loudly when neither the canonical nor the pre-restore database exists', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, [
@@ -386,7 +386,7 @@ it('fails loudly when neither the canonical nor the pre-restore database exists'
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('database compensation impossible');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -395,26 +395,26 @@ it('fails loudly when neither the canonical nor the pre-restore database exists'
 // =============================================================================
 
 it('drops the pre-restore database only at commit', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch);
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
 
         expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'emergency-backup-verified');
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
         expect(restoreDatabaseRun($scratch, $operation, 'activate')['exit'])->toBe(0);
 
         expect(File::get($scratch.'/dropdb.log'))->toBe('', 'the pre-restore database survives activation');
 
-        p73SetPhase($workspace, 'verified');
+        setRestoreOperationPhase($workspace, 'verified');
         $result = restoreDatabaseRun($scratch, $operation, 'commit');
 
         expect($result['exit'])->toBe(0, $result['output']);
-        expect(p73Databases($scratch))->toBe(['parity_db']);
-        expect(File::get($scratch.'/dropdb.log'))->toContain(p73PreRestoreDatabase($operation));
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
+        expect(File::get($scratch.'/dropdb.log'))->toContain(preRestoreDatabaseName($operation));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -423,7 +423,7 @@ it('drops the pre-restore database only at commit', function () {
 // =============================================================================
 
 it('never touches an unrelated database on the same host', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, [
@@ -432,21 +432,21 @@ it('never touches an unrelated database on the same host', function () {
         $workspace = $scratch.'/run/restores/parity-target/'.$operation;
 
         expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'emergency-backup-verified');
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
         expect(restoreDatabaseRun($scratch, $operation, 'activate')['exit'])->toBe(0);
-        p73SetPhase($workspace, 'verified');
+        setRestoreOperationPhase($workspace, 'verified');
         expect(restoreDatabaseRun($scratch, $operation, 'commit')['exit'])->toBe(0);
 
         expect(trim(File::get($scratch.'/pg/db/cataloghub_production')))->toBe('cataloghub_app t');
         expect(File::get($scratch.'/psql.log'))->not->toContain('cataloghub');
         expect(File::get($scratch.'/dropdb.log'))->not->toContain('cataloghub');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses every destructive step when the operation is in the wrong phase or belongs to another target', function (string $step, string $phase) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['state' => ['phase' => $phase]]);
@@ -456,10 +456,10 @@ it('refuses every destructive step when the operation is in the wrong phase or b
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain("is in phase '{$phase}'");
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         $operation = restoreDatabaseFixture($scratch, ['state' => ['target' => 'someone-else']]);
@@ -469,7 +469,7 @@ it('refuses every destructive step when the operation is in the wrong phase or b
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('belongs to target someone-else');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     ['stage', 'quiesced'],
@@ -479,11 +479,11 @@ it('refuses every destructive step when the operation is in the wrong phase or b
 ]);
 
 it('refuses to run at all without a state document created by restore-target', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
-        p73TargetTree($scratch);
-        p73FakePostgres($scratch);
+        targetTreeFixture($scratch);
+        installFakePostgres($scratch);
 
         $operation = '20260115-120000-abc123';
         mkdir($scratch.'/run/restores/parity-target/'.$operation, 0o700, true);
@@ -493,7 +493,7 @@ it('refuses to run at all without a state document created by restore-target', f
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('this primitive is driven by restore-target, never invoked on its own');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 

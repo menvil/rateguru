@@ -36,7 +36,7 @@ it('keeps common free of removed legacy helpers', function () {
     // Every operational script sources common for target_* helpers,
     // require_root, and the target-only parsing contract. The environment_*
     // selector helpers and the dual-selector parser are gone entirely —
-    // this is the final Phase 4 cutover slice. See
+    // this is the final the target-aware migration cutover slice. See
     // BackupTest.php/RestoreTest.php,
     // OffsiteBackupTest.php/OffsiteRetentionTest.php/OffsiteRestoreTest.php
     // and BackupCycleTest.php for their own coverage.
@@ -103,7 +103,7 @@ it('keeps deployment failure recovery active until terminal history is written',
         ->toContain('FAILURE_STATUS="failed-preparation"')
         ->toContain('FAILURE_STATUS="failed-health-check"')
         ->not->toContain('migrate:rollback')
-        // Phase 7.4 gave the terminal history event a name, because a
+        // the controlled code alignment gave the terminal history event a name, because a
         // controlled restore alignment must never record "deployment-finished
         // success" for a target that is still in maintenance. The literal now
         // appears once, as that name's default; the name itself is what the

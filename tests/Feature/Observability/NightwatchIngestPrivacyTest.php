@@ -7,7 +7,7 @@ use Laravel\Nightwatch\Facades\Nightwatch;
 use Tests\TestCase;
 
 /**
- * Phase 6B: what Nightwatch would actually put on the wire.
+ * the Nightwatch evaluation: what Nightwatch would actually put on the wire.
  *
  * The other Nightwatch tests assert RateGuru's configuration and call its
  * redaction callbacks directly. These go one level further and read the

@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.4: infrastructure/scripts/install-bootstrap-services —
+ * : infrastructure/scripts/install-bootstrap-services —
  * services and committed host configuration for a prepared RateGuru host.
  *
  * Every test executes the real, shipped script as a subprocess — never a
@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\File;
  * nothing touches the CI runner's real services or /etc.
  *
  * The profiles that matter mirror the real situations: a genuinely clean
- * PRE_DEPLOY host straight after slice 5.3 (everything to install, queue
+ * PRE_DEPLOY host straight after install-bootstrap-host-layout (everything to install, queue
  * activation deferred), the current DEPLOYED staging host (mostly PASS,
  * second apply mutates nothing), and every broken/drifted/conflicting shape
  * in between. tits-guru stays lifecycle=planned and must receive zero
@@ -407,7 +407,7 @@ function bsvcFixture(string $scratch, array $options = []): array
         file_put_contents($fs.$path, 'SECRET-SENTINEL-'.md5($path)."\n");
     }
 
-    // Fixture passwd: the slice 5.3 accounts exist.
+    // Fixture passwd: the install-bootstrap-host-layout accounts exist.
     // Group database: the code group's GID is what an Nginx worker must
     // carry in its supplementary groups.
     file_put_contents($fs.'/etc-group', implode("\n", [
@@ -626,8 +626,11 @@ it('requires root for every mode and mutates nothing without it', function () {
 // Prerequisite gates (5.2/5.3 authoritative verifies)
 // =============================================================================
 
-it('stops --apply before any mutation when the slice 5.2 or 5.3 verify fails', function () {
-    foreach (['runtime-installer' => '5.2', 'hostlayout-installer' => '5.3'] as $child => $slice) {
+it('stops --apply before any mutation when either prerequisite installer verify fails', function () {
+    foreach ([
+        'runtime-installer' => 'install-bootstrap-runtime',
+        'hostlayout-installer' => 'install-bootstrap-host-layout',
+    ] as $child => $prerequisite) {
         $scratch = bsvcScratchDir();
 
         try {
@@ -638,8 +641,8 @@ it('stops --apply before any mutation when the slice 5.2 or 5.3 verify fails', f
             [$exit, $output] = bsvcRun(['--apply'], $env);
 
             expect($exit)->toBe(1, $output);
-            expect($output)->toContain("converge slice {$slice} first (no service/config mutation was performed)");
-            expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, "a failing {$slice} gate must not mutate anything");
+            expect($output)->toContain("converge {$prerequisite} first (no service/config mutation was performed)");
+            expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, "a failing {$prerequisite} gate must not mutate anything");
             expect(bsvcSystemctlMutations($scratch))->toBe([]);
             expect(bsvcLog($scratch, 'children.log'))->not->toContain('--apply');
         } finally {
@@ -681,7 +684,7 @@ it('--check on a clean PRE_DEPLOY host reports the full plan, defers the queue, 
         [$exit, $output] = bsvcRun(['--check'], $env);
 
         expect($exit)->toBe(1, $output);
-        expect($output)->toContain('SLICE 5.4 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: NOT SATISFIED');
         expect($output)->toContain('PASS     state:staging-main — PRE_DEPLOY');
         expect($output)->toContain('PASS     target:tits-guru — lifecycle=planned — zero service configuration');
         expect($output)->toContain('MISSING  path:/home/www/rateguru/staging/shared/storage/logs');
@@ -727,7 +730,7 @@ it('converges a clean PRE_DEPLOY host end to end: files, link, log directory, ch
         [$exit, $output] = bsvcRun(['--apply'], $env);
 
         expect($exit)->toBe(0, $output);
-        expect($output)->toContain('SLICE 5.4 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: SATISFIED');
 
         // Directly-owned files: installed byte-identical, contract mode.
         foreach (bsvcManagedFiles() as $logical => $src) {
@@ -829,7 +832,7 @@ it('a second --apply on the converged host performs zero meaningful mutation', f
         [$exit2, $out2] = bsvcRun(['--apply'], $env);
 
         expect($exit2)->toBe(0, $out2);
-        expect($out2)->toContain('SLICE 5.4 CONTRACT: SATISFIED');
+        expect($out2)->toContain('HOST SERVICES CONTRACT: SATISFIED');
 
         // No managed file was rewritten (the only install calls are the
         // per-run backup directories).
@@ -860,7 +863,7 @@ it('recognizes the compliant DEPLOYED staging host: --check and --verify pass, -
 
         [$exit, $output] = bsvcRun(['--check'], $env);
         expect($exit)->toBe(0, $output);
-        expect($output)->toContain('SLICE 5.4 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: SATISFIED');
         expect($output)->toContain('PASS     state:staging-main — DEPLOYED');
         expect($output)->toContain('PASS     queue:rateguru-staging-queue — RUNNING under supervisor');
         expect($output)->toContain('PASS     socket:/run/php/rateguru-staging.sock');
@@ -895,7 +898,7 @@ it('--verify fails read-only on a non-compliant host, mutating nothing', functio
         [$exit, $output] = bsvcRun(['--verify'], $env);
 
         expect($exit)->toBe(1, $output);
-        expect($output)->toContain('SLICE 5.4 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: NOT SATISFIED');
         expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, 'a failing --verify mutated the clean fixture');
         expect(bsvcSystemctlMutations($scratch))->toBe([]);
         expect(bsvcLog($scratch, 'children.log'))->not->toContain('--apply');
@@ -917,7 +920,7 @@ it('--verify fails read-only on a non-compliant host, mutating nothing', functio
 
         expect($exit)->toBe(1, $output);
         expect($output)->toContain('DRIFT    file:/etc/nginx/sites-available/rateguru-staging');
-        expect($output)->toContain('SLICE 5.4 CONTRACT: NOT SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: NOT SATISFIED');
         expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before, 'a failing --verify mutated the drifted fixture');
         expect(bsvcSystemctlMutations($scratch))->toBe([]);
     } finally {
@@ -1457,7 +1460,7 @@ it('documents the ownership boundaries and the PRE_DEPLOY/DEPLOYED distinction i
 });
 
 // =============================================================================
-// Nginx worker supplementary groups (Phase 5.6 clean-VPS blocker #2).
+// Nginx worker supplementary groups (the clean-VPS blocker #2).
 //
 // Adding www-data to a code group in /etc/group does not change the
 // supplementary groups of Nginx workers that are already running. A host can
@@ -1509,7 +1512,7 @@ it('--apply reloads nginx once for stale workers and then verifies the replaceme
         expect($output)->toContain('service:nginx workers are stale — reloading once');
         expect($output)->toContain('stale: rateguru-staging-code:');
         expect($output)->toContain('nginx-workers:rateguru-staging-code every running worker carries the code-group GID');
-        expect($output)->toContain('SLICE 5.4 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: SATISFIED');
 
         // Reload, never restart — and exactly once.
         $mutations = bsvcSystemctlMutations($scratch);
@@ -1794,7 +1797,7 @@ it('--apply on a real two-active-target host performs exactly one validated ngin
         // Both targets' code groups were verified after the single reload.
         expect($output)->toContain('nginx-workers:rateguru-staging-code every running worker carries');
         expect($output)->toContain('nginx-workers:rateguru-second-code every running worker carries');
-        expect($output)->toContain('SLICE 5.4 CONTRACT: SATISFIED');
+        expect($output)->toContain('HOST SERVICES CONTRACT: SATISFIED');
 
         // The planned target got no service configuration at all.
         expect($output)->not->toContain('nginx-workers:tits-guru');

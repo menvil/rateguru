@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# prepare-host — Phase 7.2B: turn a clean supported VPS into infrastructure
+# Prepare-host — Prepare Host: turn a clean supported VPS into infrastructure
 # ready to host ONE RateGuru target, as a single resumable operation.
 #
 # Composes the already-authoritative primitives in their only valid dependency
@@ -18,7 +18,7 @@
 #
 #   * The runtime slice runs first because everything after it needs tools a
 #     clean Ubuntu image does not carry — `jq` above all, without which the
-#     target registry cannot be read at all. It is one of Phase 5's own
+#     Target registry cannot be read at all. It is one of the clean-host bootstrap's own
 #     authoritative installers, invoked here rather than reimplemented, and it
 #     installs packages only: no RateGuru identity, no target directory, no
 #     secret, nothing target-specific. bootstrap-host re-verifies this same
@@ -27,7 +27,7 @@
 #
 #   * Host-scope external material comes next because
 #     install-bootstrap-services (5.4) FAILS CLOSED when an Nginx vhost names a
-#     file that does not exist. This is the one manual step the Phase 5
+#     File that does not exist. This is the one manual step the clean-host bootstrap
 #     clean-host runbook still asks an operator to perform between `--check`
 #     and `--apply`; automating it is what makes preparation a single
 #     operation. All of it lives under /etc and depends on no RateGuru
@@ -37,7 +37,7 @@
 #     pipeline, unchanged and undecomposed.
 #
 #   * Target-scope material follows, because shared/.env and the deploy user's
-#     authorized_keys live inside directories and accounts slice 5.3 creates.
+#     Authorized_keys live inside directories and accounts install-bootstrap-host-layout creates.
 #     Installing them earlier would mean creating those directories with the
 #     wrong owner and making 5.3 disagree with the host.
 #
@@ -62,7 +62,7 @@
 #   * it is not a restore — no database contents, no storage, no media, no
 #     historical release;
 #   * it is not a repair — drift in existing material or an existing database
-#     is reported and fails closed, never silently reconciled (Phase 7.5);
+#     Is reported and fails closed, never silently reconciled;
 #   * it is not production activation — a lifecycle=planned target is rejected
 #     before any target-specific mutation, and this script never edits the
 #     registry;
@@ -227,7 +227,7 @@ TARGET_AGNOSTIC_SLICE=runtime
 
 slice_label() {
     case "$1" in
-        runtime)              printf 'base runtime packages (Phase 5.2)\n' ;;
+        runtime)              printf 'base runtime packages\n' ;;
         host-prerequisites)   printf 'Nginx-referenced external material (required before 5.4)\n' ;;
         bootstrap)            printf 'host bootstrap (5.2 runtime -> 5.3 identities -> 5.4 services -> preflight)\n' ;;
         target-prerequisites) printf 'identity-scoped external material (.env, deploy key, rclone)\n' ;;

@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * Phase 7.2B, GitHub side: the `Prepare staging host` and `Prepare production
+ * Prepare Host, GitHub side: the `Prepare staging host` and `Prepare production
  * host` workflows and the shared .github/actions/prepare-rateguru-host action
  * they both call.
  *
@@ -459,7 +459,7 @@ it('leaves tits-guru lifecycle=planned and changes no registry entry', function 
     expect($registry['targets']['tits-guru']['lifecycle'])->toBe('planned');
     expect($registry['targets']['staging-main']['lifecycle'])->toBe('active');
 
-    // Nothing added in Phase 7.2 writes to the registry.
+    // Nothing added in Prepare Host writes to the registry.
     foreach ([
         'infrastructure/scripts/prepare-host',
         'infrastructure/scripts/install-target-prerequisites',

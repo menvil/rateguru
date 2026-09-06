@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.2B: infrastructure/scripts/prepare-host — the one authoritative
+ * Prepare Host: infrastructure/scripts/prepare-host — the one authoritative
  * server-side preparation entry point, which turns a clean supported VPS into
  * infrastructure ready to host one RateGuru target.
  *
@@ -442,9 +442,9 @@ it('runs the slices in the only order that can succeed on a clean host', functio
             $mutations,
         );
 
-        // Host-scope material before bootstrap, because slice 5.4 fails closed
+        // Host-scope material before bootstrap, because install-bootstrap-services fails closed
         // without it; target-scope material after, because its parent
-        // directories and owning accounts are created by slice 5.3; the
+        // directories and owning accounts are created by install-bootstrap-host-layout; the
         // database last, because it needs both PostgreSQL and the credentials
         // inside shared/.env.
         expect($order)->toBe([

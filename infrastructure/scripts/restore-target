@@ -500,7 +500,7 @@ artisan_as_runtime_user() {
 
 # --- preconditions --------------------------------------------------------------------
 #
-# Phase 7.3 restores DATA on a live, deployed target. A target with no
+# Restore Target Data restores DATA on a live, deployed target. A target with no
 # canonical current release cannot be put into maintenance, cannot be health
 # checked, and — decisively — offers no release.json to compare the backup's
 # source_sha against, so the code-alignment decision this whole operation ends
@@ -908,7 +908,7 @@ leave_maintenance() {
 # took effect before its RUNNING confirmation timed out, a cron entry moved
 # back before its chown failed — leaves a flag claiming a writer is stopped
 # while the writer is running. `held` would then be a lie, which is exactly
-# the guarantee Phase 7.3 cannot afford to break.
+# the guarantee Restore Target Data cannot afford to break.
 #
 # Every action is guarded and non-fatal: this runs when something has already
 # gone wrong, and its own failure must never replace the original diagnosis.

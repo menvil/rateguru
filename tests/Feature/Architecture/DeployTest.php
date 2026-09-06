@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 5: target-aware deployment.
+ * the target-aware migration: target-aware deployment.
  *
  * These tests execute the real shipped `infrastructure/scripts/deploy` —
  * never a reimplementation of its logic — with every host dependency
@@ -209,7 +209,7 @@ function deployOpsVerifyRequiredClisStub(string $scratch, string $logFile): stri
  * "-u VALUE --" and execs the remaining command directly as the current
  * (test) user.
  *
- * supervisorctl (slice 5.5) is stateful, mirroring the technique
+ * supervisorctl is stateful, mirroring the technique
  * InstallBootstrapServicesTest already established: `status` answers from a
  * queue-running state file, `update`/`start` create it (unless the
  * activation-fail toggle simulates a worker that never reaches RUNNING),
@@ -2204,14 +2204,14 @@ it('gates the supervisor wait tuning behind the shared test-override flag', func
 // untouched" test here, checking infrastructure/config/sudoers/rateguru-deploy
 // and .github/workflows/deploy-staging.yml against origin/develop. Both
 // legitimately graduated to the generic wrappers/--target staging-main in
-// Phase 4 slice 8 (see TargetPerimeterTest.php), leaving that test with an
+// the target-aware migration (see TargetPerimeterTest.php), leaving that test with an
 // empty $unchanged list — it was deleted outright rather than left as a
 // vacuous loop, matching the precedent already set elsewhere in this file's
 // own history for scripts that graduate out of "still legacy-only".
 // =============================================================================
 
 // =============================================================================
-// The first-deploy permission contract (Phase 5.6 clean-VPS blocker #2).
+// The first-deploy permission contract (the clean-VPS blocker #2).
 //
 // A clean VPS bootstrapped through 5.2/5.3/5.4 reached PRE_DEPLOY READY, the
 // first deployment switched current, and then all 10 health checks returned
@@ -2340,7 +2340,7 @@ it('keeps the post-switch health check fatal, so a release Nginx cannot serve st
 });
 
 // =============================================================================
-// Phase 7.4: the restore interlock and controlled code alignment
+// the controlled code alignment: the restore interlock and controlled code alignment
 // =============================================================================
 //
 // Two behaviours, one gate. While a target is held after a restore its live

@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.5: infrastructure/scripts/bootstrap-host — the one
+ * infrastructure/scripts/bootstrap-host — the one
  * authoritative host-bootstrap entry point that composes the existing
  * slices (5.2 install-bootstrap-runtime, 5.3 install-bootstrap-host-layout,
  * 5.4 install-bootstrap-services) plus the final bootstrap-host-preflight.
@@ -522,7 +522,7 @@ it('skips already-satisfied slices and applies only the unsatisfied ones', funct
     }
 });
 
-it('fails fast at slice 5.4, keeps 5.2/5.3 converged without rollback, and resumes at 5.4 on the next apply', function () {
+it('fails fast at install-bootstrap-services, keeps 5.2/5.3 converged without rollback, and resumes at 5.4 on the next apply', function () {
     $scratch = bhostScratchDir();
 
     try {
@@ -962,7 +962,7 @@ it('documents the canonical operator flow in the runbook and README', function (
         ->toContain('infrastructure/scripts/bootstrap-host');
 });
 
-it('records every Phase 5 slice completed after its own real acceptance', function () {
+it('records every bootstrap slice completed after its own real acceptance', function () {
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)->toContain('5.4 Services and configuration — completed');
@@ -978,17 +978,17 @@ it('records every Phase 5 slice completed after its own real acceptance', functi
     // No stale "awaiting acceptance" wording survives anywhere.
     expect($roadmap)->not->toContain('5.5 Bootstrap orchestrator — implemented');
 
-    // Phase 5 closed and handed over; there is still exactly one current phase.
+    // the clean-host bootstrap closed and handed over; there is still exactly one current phase.
     expect(substr_count($roadmap, '🚧 current'))->toBe(1);
     expect($roadmap)
         ->toMatch('/^\|\s*5\s*\|\s*Infrastructure installer and clean-VPS bootstrap\s*\|\s*✅ completed\s*\|$/m')
         ->toContain('## 5. Infrastructure installer and clean-VPS bootstrap — completed');
 });
 
-it('keeps the Phase 5 and Phase 7 rehearsal gates distinct', function () {
+it('keeps the clean-host bootstrap and the disaster-recovery work rehearsal gates distinct', function () {
     // The offsite restore-test that passed in 5.6 proves a backup is
     // restorable. It does not prove the application can be reconstructed
-    // after server/data loss, and must never be read as closing Phase 7.
+    // after server/data loss, and must never be read as closing the disaster-recovery work.
     $roadmap = File::get(base_path('infrastructure/ROADMAP.md'));
 
     expect($roadmap)

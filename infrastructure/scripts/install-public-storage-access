@@ -184,9 +184,9 @@ APP_STORAGE=""
 PUBLIC_STORAGE=""
 PUBLIC_LINK=""
 
-# Deployment-state split (Phase 5.4): this installer's core responsibility —
+# Deployment-state split: this installer's core responsibility —
 # the two-entry www-data traversal ACL on shared and shared/storage — must
-# work before an application release exists, because slice 5.3 already
+# Work before an application release exists, because install-bootstrap-host-layout already
 # creates those two directories on a clean host. The application-level
 # proofs (storage/app/public, the current/public/storage link, the HTTP
 # canary, the existing-upload regression) require a deployed release.
@@ -331,7 +331,7 @@ report_namei() {
 # Every structural precondition that must hold regardless of mode, before any
 # ACL is read or written. Shared between --check and --apply's preflight —
 # apply must never skip a check check already performs. The two ACL-bearing
-# directories (shared, shared/storage — the slice 5.3 contract) are required
+# Directories (shared, shared/storage — the install-bootstrap-host-layout contract) are required
 # in both deployment states; the application-created descendants and the
 # current/public/storage link are required only once a release is deployed.
 run_structural_validation() {

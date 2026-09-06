@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Anti-regression guard for Phase 4's legacy-environment-interface removal.
+ * Anti-regression guard for the target-aware migration's legacy-environment-interface removal.
  *
  * The `--environment staging|production` operational selector, and every
  * helper/constant/wrapper built specifically to support it alongside

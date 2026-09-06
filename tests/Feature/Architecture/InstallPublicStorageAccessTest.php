@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 (staging infrastructure defect fix): grants Nginx (www-data)
+ * the target-aware migration (staging infrastructure defect fix): grants Nginx (www-data)
  * narrowly scoped POSIX ACL traversal into a target's shared storage, fixing
  * the real staging incident where uploaded images returned HTTP 403 because
  * TARGET_ROOT/shared and TARGET_ROOT/shared/storage (mode 2770, group
@@ -1317,8 +1317,8 @@ function psaStatSummary(string $path): array
 }
 
 // =============================================================================
-// Phase 5.4: PRE_DEPLOY vs DEPLOYED split. The ACL itself must be grantable
-// and verifiable before any application release exists (slice 5.3 already
+// the service bootstrap: PRE_DEPLOY vs DEPLOYED split. The ACL itself must be grantable
+// and verifiable before any application release exists (install-bootstrap-host-layout already
 // creates shared and shared/storage on a clean host); the application/HTTP
 // proofs (storage/app/public, the current/public/storage link, the canary,
 // the existing-upload regression) are deferred until a release is deployed —
@@ -1326,7 +1326,7 @@ function psaStatSummary(string $path): array
 // =============================================================================
 
 /**
- * Reduces a full scratch target to the genuine pre-deploy shape slice 5.3
+ * Reduces a full scratch target to the genuine pre-deploy shape install-bootstrap-host-layout
  * leaves behind: shared and shared/storage exist; storage/app, its public
  * descendant and the whole current tree do not.
  *

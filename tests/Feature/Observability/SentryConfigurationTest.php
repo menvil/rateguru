@@ -172,7 +172,7 @@ it('keeps the breadcrumb categories that make an error diagnosable', function ()
     }
 });
 
-it('traces the backend operations Phase 6 cares about', function () {
+it('traces the backend operations the observability work cares about', function () {
     foreach (['queue_job_transactions', 'queue_jobs', 'sql_queries', 'views', 'livewire', 'http_client_requests', 'cache', 'notifications'] as $feature) {
         expect(config("sentry.tracing.{$feature}"))->toBeTrue("tracing feature {$feature} must stay enabled");
     }

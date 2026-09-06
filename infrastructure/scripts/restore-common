@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# restore-common — Phase 7.3 restore-only shared library.
+# restore-common — Restore Target Data restore-only shared library.
 #
 # Sourced, never executed: it defines constants and functions and runs
 # nothing. Installed 0644 root:root, exactly like infrastructure/scripts/common
@@ -63,7 +63,7 @@ PSQL_BIN="$(restore_gated_default RATEGURU_PSQL_BIN /usr/bin/psql)"
 RUNUSER_BIN="$(restore_gated_default RATEGURU_RESTORE_RUNUSER_BIN runuser)"
 POSTGRES_SUPERUSER="$(restore_gated_default RATEGURU_RESTORE_SUPERUSER postgres)"
 
-# Phase 7.3-only paths and identities.
+# Restore Target Data-only paths and identities.
 RESTORE_HISTORY_ROOT="$(restore_gated_default RATEGURU_RESTORE_HISTORY_ROOT /home/www/rateguru/restores)"
 RESTORE_CRON_D_ROOT="$(restore_gated_default RATEGURU_RESTORE_CRON_D_ROOT /etc/cron.d)"
 RESTORE_SUPERVISORCTL_BIN="$(restore_gated_default RATEGURU_RESTORE_SUPERVISORCTL_BIN supervisorctl)"
@@ -96,7 +96,7 @@ RESTORE_SCHEDULER_RETRY_DELAY="$(restore_gated_default RATEGURU_RESTORE_SCHEDULE
 #
 # The exact seven files infrastructure/scripts/backup produces, in the exact
 # order it writes them into SHA256SUMS. This is the existing, accepted backup
-# format: Phase 7.3 reads it and never redefines it.
+# format: Restore Target Data reads it and never redefines it.
 #
 # For a LIVE restore only database.dump and storage-app.tar.gz are ever
 # applied. environment.env and server-configuration.tar.gz are required to be
@@ -142,7 +142,7 @@ RESTORE_NEVER_APPLIED_FILES=(
 
 # The operation ID format, its regex and validate_operation_id all live in
 # `common` (see its "restore alignment authorization" section): `deploy` has to
-# validate the same identifier since Phase 7.4, and deploy does not source this
+# validate the same identifier since the controlled code alignment, and deploy does not source this
 # library. This file is always sourced after `common`, so every restore
 # primitive keeps calling the one shared implementation.
 
@@ -304,7 +304,7 @@ restore_require_operation_workspace() {
 # Every guard here is deliberate: an empty or unset value, a path that is not
 # absolute, the workspace root itself, anything outside it, a symlink, or a
 # path containing a relative component all abort before `rm` runs. There is no
-# code path in Phase 7.3 that removes a recursively-deleted path built from
+# code path in Restore Target Data that removes a recursively-deleted path built from
 # anything but validated target/operation IDs.
 restore_remove_operation_path() {
     local path="${1-}"

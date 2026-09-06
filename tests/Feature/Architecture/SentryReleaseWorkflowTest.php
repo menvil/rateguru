@@ -69,8 +69,8 @@ function localActionCallSites(string $uses): array
 
 /**
  * Every place the shared Sentry action is invoked — from a workflow job, or
- * from another composite action. Phase 7.1 moved the post-rollback marker into
- * .github/actions/rollback-rateguru, and Phase 7.2A moved every remaining
+ * from another composite action. the shared operation actions moved the post-rollback marker into
+ * .github/actions/rollback-rateguru, and the deployment observability work moved every remaining
  * caller behind .github/actions/record-rateguru-deployment, so this scan
  * follows it there rather than losing sight of a call site.
  *
@@ -82,7 +82,7 @@ function sentryReleaseCallSites(): array
 }
 
 /**
- * Phase 7.2A inserted one indirection: workflows no longer call the Sentry
+ * the deployment observability work inserted one indirection: workflows no longer call the Sentry
  * action directly, they call .github/actions/record-rateguru-deployment, which
  * records the same transition in Sentry AND in Nightwatch.
  *
@@ -223,7 +223,7 @@ it('takes no untrusted expression into a shell, and no secret onto a command lin
 });
 
 it('is called only after a successful, health-checked deployment', function () {
-    // Since Phase 7.2A the Sentry action has exactly one caller: the shared
+    // Since the deployment observability work the Sentry action has exactly one caller: the shared
     // recording action that produces every observability marker for a
     // deployment state transition. Nothing else may call it directly.
     expect(array_keys(sentryReleaseCallSites()))->toBe([
@@ -238,7 +238,7 @@ it('is called only after a successful, health-checked deployment', function () {
         'release.yml:deploy-production',
         // One rollback marker for every target, not one per workflow.
         'rollback-rateguru/action.yml:runs',
-        // Phase 7.4: a recovery that had to install code really did deploy a
+        // the controlled code alignment: a recovery that had to install code really did deploy a
         // release, and it is marked only once restore-target --resume brought
         // the target back. A restore that came back ALIGNED deployed nothing
         // and deliberately records no marker at all.
@@ -483,9 +483,9 @@ it('marks a rollback as a new deployment of the same immutable release', functio
 });
 
 it('leaves the deployment workflows themselves otherwise unchanged', function () {
-    // Phase 6 adds observability; it does not redesign deployment. Every
+    // the observability work adds observability; it does not redesign deployment. Every
     // deploy-rateguru call site, and the health-check ordering they rely on,
-    // must still be exactly what Phase 4 and Phase 5 established.
+    // must still be exactly what the target-aware migration and the clean-host bootstrap established.
     $deployStaging = Yaml::parse(File::get(base_path('.github/workflows/deploy-staging.yml')));
 
     expect(data_get($deployStaging, 'jobs.deploy.needs'))->toBe(['resolve', 'build'])

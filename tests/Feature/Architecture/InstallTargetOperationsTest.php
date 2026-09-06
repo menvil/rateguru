@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 2b: transactional installation and real-VPS parity
+ * Transactional installation of the operational bundle, and real-VPS parity
  * verification for the read-only target operations.
  *
  * These tests exercise the real shipped installer — never a reimplementation
@@ -569,7 +569,7 @@ SH;
 
 /**
  * A self-contained stub `backup`: understands only --help and --target
- * tits-guru rejection — Phase 4 slice 7.1's installer never runs a real
+ * tits-guru rejection — 's installer never runs a real
  * backup (see verify_staged_candidates/verify_backup_help/
  * verify_backup_planned_target_rejected in the shipped script), so the stub
  * needs no database/filesystem handling at all. Mirrors
@@ -794,7 +794,7 @@ SH;
 }
 
 /**
- * A self-contained stub for one of the five Phase 7.3 restore primitives.
+ * A self-contained stub for one of the five Restore Target Data restore primitives.
  * They share one contract — answer --help, reject tits-guru with the
  * lifecycle diagnostic, do nothing otherwise — so one parameterized stub
  * covers all five instead of five near-identical copies.
@@ -1737,7 +1737,7 @@ it('verify_planned_target_rejected fails when the rejection happens for the wron
 });
 
 // =============================================================================
-// Phase 4: verify_cleanup_dry_run / verify_cleanup_planned_target_rejected —
+// the target-aware migration: verify_cleanup_dry_run / verify_cleanup_planned_target_rejected —
 // the runtime-verification-block additions for cleanup.
 // =============================================================================
 
@@ -1809,7 +1809,7 @@ it('verify_cleanup_planned_target_rejected fails when the rejection happens for 
 });
 
 // =============================================================================
-// Phase 4 slice 5: verify_deploy_help / verify_deploy_planned_target_rejected
+// the target-aware migration: verify_deploy_help / verify_deploy_planned_target_rejected
 // — the runtime-verification-block additions for deploy.
 // =============================================================================
 
@@ -1883,7 +1883,7 @@ it('verify_deploy_planned_target_rejected fails when the rejection happens for t
 });
 
 // =============================================================================
-// Phase 4 slice 6: verify_rollback_help / verify_rollback_planned_target_
+// the target-aware migration: verify_rollback_help / verify_rollback_planned_target_
 // rejected — the runtime-verification-block additions for rollback.
 // =============================================================================
 
@@ -1957,7 +1957,7 @@ it('verify_rollback_planned_target_rejected fails when the rejection happens for
 });
 
 // =============================================================================
-// Phase 4 slice 7.1: verify_backup_help / verify_backup_planned_target_
+// : verify_backup_help / verify_backup_planned_target_
 // rejected / verify_restore_test_help / verify_restore_test_planned_target_
 // rejected — the runtime-verification-block additions for backup and
 // restore-test.
@@ -2102,7 +2102,7 @@ it('verify_restore_test_planned_target_rejected fails when the rejection happens
 });
 
 // =============================================================================
-// Phase 4 slice 7.2: verify_offsite_backup_help / verify_offsite_backup_
+// : verify_offsite_backup_help / verify_offsite_backup_
 // planned_target_rejected / verify_offsite_retention_help / verify_offsite_
 // retention_planned_target_rejected / verify_offsite_restore_test_help /
 // verify_offsite_restore_test_planned_target_rejected — the runtime-
@@ -2318,7 +2318,7 @@ it('verify_offsite_restore_test_planned_target_rejected fails when the rejection
 });
 
 // =============================================================================
-// Phase 4 slice 7.3: verify_backup_cycle_help / verify_backup_cycle_
+// : verify_backup_cycle_help / verify_backup_cycle_
 // planned_target_rejected — the runtime-verification-block additions for
 // backup-cycle.
 // =============================================================================
@@ -3373,7 +3373,7 @@ it('removes the temporary file and leaves the destination untouched when the ren
 });
 
 // =============================================================================
-// Phase 5.4: PRE_DEPLOY vs DEPLOYED vs BROKEN deployment-state classification.
+// the service bootstrap: PRE_DEPLOY vs DEPLOYED vs BROKEN deployment-state classification.
 // A genuinely clean pre-deploy host has no `current` symlink — the bundle
 // must still install, with application-health probes deferred (never faked,
 // never reported as OK); a valid current keeps the full runtime
@@ -3569,7 +3569,7 @@ it('fails closed before any destination is touched for every broken current shap
 // =============================================================================
 // verify-required-clis as a first-class managed CLI.
 //
-// Regression coverage for the Phase 5.6 clean-VPS blocker: deploy invokes
+// Regression coverage for the clean-VPS blocker: deploy invokes
 // /home/www/rateguru/bin/verify-required-clis by absolute path on every
 // deployment, before current is ever switched, but this installer used to
 // omit the helper entirely. An older server worked only because the file

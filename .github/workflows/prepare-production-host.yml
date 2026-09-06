@@ -10,7 +10,7 @@ name: Prepare production host
 # is not lifecycle=active, and it refuses BEFORE any target-specific mutation —
 # so a real run of this workflow fails closed on the server today. It exists now
 # to prove that production will be prepared by exactly the same mechanism once
-# Phase 8 activates and provisions the target, rather than by a separate
+# the production launch activates and provisions the target, rather than by a separate
 # production-shaped procedure invented under pressure on launch day.
 #
 # Nothing here weakens that gate, nothing here edits the registry, and the

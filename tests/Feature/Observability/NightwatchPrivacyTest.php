@@ -13,7 +13,7 @@ use Symfony\Component\HttpFoundation\HeaderBag;
 use Symfony\Component\HttpFoundation\InputBag;
 
 /**
- * Phase 6B: the redaction callbacks, exercised the way the agent path
+ * the Nightwatch evaluation: the redaction callbacks, exercised the way the agent path
  * exercises them.
  *
  * Each of these hands a real Nightwatch record to the exact method
@@ -88,7 +88,7 @@ it('removes the request IP entirely, rather than hashing or truncating it', func
     nightwatchPrivacy()->redactRequest($record);
 
     // Not a hash and not a /24: a reversible-by-lookup stand-in is not
-    // anonymity, and Phase 6B has no question a client address answers.
+    // anonymity, and the Nightwatch evaluation has no question a client address answers.
     expect($record->ip)->toBe('');
 });
 

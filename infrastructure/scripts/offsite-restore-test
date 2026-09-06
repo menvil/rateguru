@@ -16,7 +16,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 7.2: gated test overrides — the rclone-related set matches
+# Gated test overrides — the rclone-related set matches
 # offsite-backup/offsite-retention exactly; the database binaries match
 # local restore-test's own established set exactly.
 RCLONE_CONFIG_DEFAULT="/root/.config/rclone/rclone.conf"

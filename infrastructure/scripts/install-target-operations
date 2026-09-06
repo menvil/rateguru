@@ -24,7 +24,7 @@
 #     and restore-common (sourced libraries), health-check and status
 #     (read-only), cleanup, deploy, rollback, backup, restore-test,
 #     offsite-backup, offsite-retention, offsite-restore-test, backup-cycle,
-#     the Phase 7.3 restore primitives (fetch-backup, verify-backup,
+#     The Restore Target Data restore primitives (fetch-backup, verify-backup,
 #     restore-database, restore-storage, restore-target) and
 #     verify-required-clis — and deployment.conf, the host-global
 #     (non-target-specific) configuration those scripts source.
@@ -34,12 +34,12 @@
 #     helper: deploy invokes /home/www/rateguru/bin/verify-required-clis by
 #     absolute path on every deployment, before current is ever switched. A
 #     clean host that installed only the rest of the bundle cannot perform
-#     its first deploy at all — the Phase 5.6 clean-VPS acceptance proved
+#     Its first deploy at all — the clean-VPS acceptance proved
 #     exactly that. Unlike the other scripts it never sources common and is
 #     not target-aware: it is a generic release-tree check taking
 #     --release-root, so it carries no ordering dependency here.
 #   * restore-common is the second sourced library in the bundle, alongside
-#     common: the five Phase 7.3 restore primitives share backup-path,
+#     Common: the five Restore Target Data restore primitives share backup-path,
 #     workspace, archive-safety, restore-state and database-name validation,
 #     and five copies of each in five privileged scripts is how a restore
 #     ends up trusting a path in one place that another place rejects. Like
@@ -156,7 +156,7 @@ INSTALL_GROUP_ID=0
 
 REQUIRED_TOOLS=(bash jq curl install stat cmp diff awk mv cp mktemp readlink tail env find sort cut sed rm flock)
 
-# --- Deployment-state classification (Phase 5.4) -----------------------------
+# --- Deployment-state classification -----------------------------------------
 #
 # A genuinely clean pre-deploy host legitimately has no `current` symlink for
 # the staging target: infrastructure bootstrap readiness and application
@@ -646,7 +646,7 @@ verify_staged_candidates() {
         || fail "staged backup-cycle --target tits-guru failed for the wrong reason (expected lifecycle=planned): ${staged_backup_cycle_planned_output}"
     log "  staged backup-cycle --target tits-guru: correctly rejected (lifecycle=planned)"
 
-    # Phase 7.3: the five restore primitives are never run for real here
+    # The five restore primitives are never run for real here
     # either — a real restore would download a backup, create a temporary
     # database, quiesce the target and swap its live data, none of which
     # belongs in a read-only preflight. --help was already proven above; only
@@ -1064,7 +1064,7 @@ verify_cleanup_planned_target_rejected() {
     log "cleanup --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 4 slice 5: deploy --help only — never a real deployment. This
+# Deploy --help only — never a real deployment. This
 # installer's own --apply/--verify always run as root already (run_apply/
 # run_verify both call require_root before perform_apply/perform_verify), so
 # the installed deploy's own require_root passes here exactly as it would in
@@ -1090,7 +1090,7 @@ verify_deploy_planned_target_rejected() {
     log "deploy --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 4 slice 6: rollback --help only — never a real rollback. This
+# Rollback --help only — never a real rollback. This
 # installer's own --apply/--verify always run as root already, so the
 # installed rollback's own require_root passes here exactly as it would in
 # production; --help is reached and exits 0 before any selector, release or
@@ -1116,7 +1116,7 @@ verify_rollback_planned_target_rejected() {
     log "rollback --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 4 slice 7.1: backup/restore-test --help only — never a real backup or
+# Backup/restore-test --help only — never a real backup or
 # restore test. This installer's own --apply/--verify always run as root
 # already, so the installed scripts' own require_root passes here exactly as
 # it would in production; --help is reached and exits 0 before any selector,
@@ -1158,7 +1158,7 @@ verify_restore_test_planned_target_rejected() {
     log "restore-test --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 4 slice 7.2: offsite-backup/offsite-retention/offsite-restore-test
+# Offsite-backup/offsite-retention/offsite-restore-test
 # --help only — never a real upload, retention purge or restore test. This
 # installer's own --apply/--verify always run as root already, so the
 # installed scripts' own require_root passes here exactly as it would in
@@ -1216,7 +1216,7 @@ verify_offsite_restore_test_planned_target_rejected() {
     log "offsite-restore-test --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 4 slice 7.3: backup-cycle --help only — never a real cycle. This
+# Backup-cycle --help only — never a real cycle. This
 # installer's own --apply/--verify always run as root already, so the
 # installed backup-cycle's own require_root passes here exactly as it would
 # in production; --help is reached and exits 0 before any selector, lock,
@@ -1242,7 +1242,7 @@ verify_backup_cycle_planned_target_rejected() {
     log "backup-cycle --target tits-guru: correctly rejected (lifecycle=planned)"
 }
 
-# Phase 7.3: the five restore primitives, --help and the tits-guru lifecycle
+# The five restore primitives, --help and the tits-guru lifecycle
 # rejection only — never a real fetch, verification, stage, activation or
 # restore. A real invocation would download a backup, create a temporary
 # database, quiesce the target and swap its live data; none of that belongs
@@ -1438,7 +1438,7 @@ validate_destination_directories() {
 # `restore-target` holds `<run root>/restore-target-<namespace>.lock` for the
 # whole of a live data restore. This installer replaces the bundle file by
 # file, so an --apply that overlapped a running restore could hand that
-# restore a mismatched pair of Phase 7.3 scripts halfway through — a
+# Restore a mismatched pair of Restore Target Data scripts halfway through — a
 # restore-target from one revision driving a restore-database from another.
 #
 # So --apply takes the SAME lock, for every active target's backup namespace,

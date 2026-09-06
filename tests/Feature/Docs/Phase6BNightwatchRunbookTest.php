@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 6B documentation is operational, not decorative: an operator has to be
+ * The Nightwatch evaluation runbook is operational, not decorative: an operator has to be
  * able to create the Nightwatch account, configure staging, install the agent,
  * run the acceptance matrix and remove the whole thing from this one page.
  * These assert the facts that would silently rot — paths, program names,
@@ -140,7 +140,7 @@ it('regenerates the controlled queue-failure scenario from current code', functi
     $job = File::get(base_path('app/Jobs/RunMediaAuditJob.php'));
 
     // The lock identity, the store and the failure message all come from the
-    // job as it is today — not copied forward from the Phase 6A runbook.
+    // job as it is today — not copied forward from the Sentry runbook.
     expect($runbook)
         ->toContain('media-audit:full')
         ->toContain('A full media audit is already running.')

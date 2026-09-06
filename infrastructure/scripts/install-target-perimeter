@@ -76,7 +76,7 @@ SRC_SELF="${SCRIPT_DIR}/install-target-perimeter"
 SRC_WRAPPER_DEPLOY="${REPO_ROOT}/infrastructure/config/wrappers/rateguru-deploy"
 SRC_WRAPPER_ROLLBACK="${REPO_ROOT}/infrastructure/config/wrappers/rateguru-rollback"
 SRC_WRAPPER_CLEANUP="${REPO_ROOT}/infrastructure/config/wrappers/rateguru-cleanup"
-# Phase 7.4: the restore perimeter. The restricted deploy credential gains one
+# The restore perimeter. The restricted deploy credential gains one
 # more thing it may ask for by name — a restore of the target it is registered
 # for — and nothing else. Everything destructive about a restore stays in
 # /home/www/rateguru/bin/restore-target, which this wrapper is the only remote

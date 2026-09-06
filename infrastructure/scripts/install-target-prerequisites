@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# install-target-prerequisites — Phase 7.2B: converge the EXTERNAL material one
+# Install-target-prerequisites — Prepare Host: converge the EXTERNAL material one
 # RateGuru target needs, from operator-supplied secrets, without ever
 # overwriting or rotating what is already there.
 #
-# The problem. Phase 5 host bootstrap deliberately generates no secret
+# The problem. the clean-host bootstrap host bootstrap deliberately generates no secret
 # material: no APP_KEY, no database password, no TLS private key, no htpasswd,
 # no rclone credentials, no deploy authorized_keys. That decision is correct
 # and is preserved here in full — this script still generates nothing. What it
 # adds is a safe way to *deliver* material the operator already holds (in
 # GitHub Environment secrets) onto a clean host, so that the one manual step
-# the Phase 5 clean-host runbook still requires between `--check` and `--apply`
+# the clean-host bootstrap clean-host runbook still requires between `--check` and `--apply`
 # ("you supply the external prerequisites the report names") can be performed
 # by the same operation that runs the bootstrap.
 #
@@ -20,7 +20,7 @@
 #
 #   --scope host    Files the Nginx vhosts reference: the Basic Auth htpasswd,
 #                   TLS certificate/key/dhparams and the shared TLS options
-#                   snippet. install-bootstrap-services (slice 5.4) FAILS
+#                   Snippet. install-bootstrap-services FAILS
 #                   CLOSED when any of them is absent, so they must be in place
 #                   BEFORE host bootstrap runs. All of them live under /etc,
 #                   owned by root, and depend on no RateGuru identity — which
@@ -29,7 +29,7 @@
 #   --scope target  Files that live inside RateGuru's own identities and
 #                   directories: the target's shared/.env, the deploy user's
 #                   authorized_keys, and root's rclone.conf. Their parent
-#                   directories and owning accounts are created by slice 5.3,
+#                   Directories and owning accounts are created by install-bootstrap-host-layout,
 #                   so they can only be installed AFTER host bootstrap. Slice
 #                   5.4 treats all three as WARN rather than a gate, precisely
 #                   because a pre-deploy host legitimately lacks them.
@@ -164,9 +164,9 @@ All modes require root and a lifecycle=active target.
 
   --target        Deployment target ID from the RateGuru target registry.
   --scope         host   Nginx-referenced material under /etc, required BEFORE
-                         host bootstrap (slice 5.4 fails closed without it).
+                         host bootstrap (install-bootstrap-services fails closed without it).
                   target Material inside RateGuru identities and directories,
-                         installable only AFTER slice 5.3 has created them.
+                         installable only AFTER install-bootstrap-host-layout has created them.
                   all    Both (default).
   --material-dir  Root-owned 0700 directory holding operator-supplied material,
                   one file per logical prerequisite name. Read only; never
@@ -734,12 +734,12 @@ install_row() {
         # /etc/letsencrypt/live/<host>, nginx's /etc/nginx): creating the
         # directory root-owned and world-traversable is exactly what those
         # packages would do, and is required for material to be in place before
-        # slice 5.4 runs.
+        # install-bootstrap-services runs.
         #
         # Target-scope destinations are different: their parents belong to
-        # RateGuru identities that slice 5.3 creates with specific ownership and
-        # setgid modes. Creating one here would produce a directory 5.3 then has
-        # to disagree with, so this fails closed instead.
+        # RateGuru identities that install-bootstrap-host-layout creates with specific ownership and
+        # setgid modes. Creating one here would produce a directory that
+        # installer would then have to disagree with, so this fails closed instead.
         if [[ "${scope}" != host ]]; then
             fail "cannot install ${destination}: ${dst_dir} does not exist — its owner is created by host bootstrap; run prepare-host --apply, which orders this correctly"
         fi

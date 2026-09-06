@@ -551,7 +551,7 @@ slices 1–2, which installed nothing — so it completes on merge.
 
    **Accepted on the real staging VPS:** `install-bootstrap-services
    --check` reported the contract already satisfied (PASS: 41, MISSING: 0,
-   DRIFT: 0, WARN: 0, CONFLICT: 0, DEFERRED: 0 — `SLICE 5.4 CONTRACT:
+   DRIFT: 0, WARN: 0, CONFLICT: 0, DEFERRED: 0 — `HOST SERVICES CONTRACT:
    SATISFIED`); `--apply`, `--verify` and a second `--apply` all succeeded,
    with the second apply idempotent (zero meaningful mutation) and staging
    healthy throughout. Every child contract passed — target operations,

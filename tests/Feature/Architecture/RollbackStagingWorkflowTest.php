@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The staging rollback workflow after Phase 7.1: a thin operator-facing shell
+ * The staging rollback workflow after the shared operation actions: a thin operator-facing shell
  * whose target and environment are structural, calling the one shared
  * .github/actions/rollback-rateguru implementation
  * (RollbackRateGuruActionTest owns that contract).
@@ -101,7 +101,7 @@ it('rolls back staging manually, through the fixed target-aware wrapper only', f
     //
     // DEPLOY_ROOT is the same staging-environment variable deploy-staging.yml
     // already consumes; the rollback needs it to read back which release the
-    // target actually landed on. The three SENTRY_* entries are Phase 6
+    // target actually landed on. The three SENTRY_* entries are the observability work
     // observability, and their split is the secret model: the auth token is a
     // credential and is a secret, the org and project slugs are coordinates
     // and are variables — matching how DEPLOY_* is already split here.

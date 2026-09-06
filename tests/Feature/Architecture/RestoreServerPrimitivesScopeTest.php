@@ -3,46 +3,20 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3's own scope guard: what this phase establishes, and — more
+ * Restore Target Data's own scope guard: what it establishes, and — more
  * importantly — everything it deliberately does not begin.
  *
- * 7.3 ends when a live target's DATA can be restored from one exact,
+ * It ends when a live target's DATA can be restored from one exact,
  * fully-verified backup, safely, with an emergency backup taken first and a
- * compensating undo for every live step. The GitHub-facing restore surface is
- * 7.4, Repair Target is 7.5, Recover Host is 7.6/7.7, the rejected durable
- * artifact archive stays rejected, the accepted backup subsystem is untouched,
- * and production stays unprovisioned until Phase 8.
+ * compensating undo for every live step. The GitHub-facing restore surface,
+ * Repair Target and Recover Host are each their own operation with their own
+ * guard, the rejected durable artifact archive stays rejected, the accepted
+ * backup subsystem is untouched, and production stays unprovisioned until the
+ * production launch.
  */
-
-/**
- * Every operational file a rejected architecture could sneak back into.
- *
- * @return list<string>
- */
-function p73OperationalFiles(): array
-{
-    $configFiles = [];
-
-    $tree = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator(base_path('infrastructure/config'), FilesystemIterator::SKIP_DOTS),
-    );
-
-    foreach ($tree as $entry) {
-        if ($entry->isFile()) {
-            $configFiles[] = $entry->getPathname();
-        }
-    }
-
-    return array_values(array_filter(array_merge(
-        glob(base_path('.github/workflows/*.yml')) ?: [],
-        glob(base_path('.github/actions/*/action.yml')) ?: [],
-        glob(base_path('infrastructure/scripts/*')) ?: [],
-        $configFiles,
-    ), 'is_file'));
-}
 
 /** The five restore CLIs and the one restore-only library this phase adds. */
-function p73NewPrimitives(): array
+function restorePrimitiveScripts(): array
 {
     return [
         'infrastructure/scripts/fetch-backup',
@@ -54,116 +28,12 @@ function p73NewPrimitives(): array
     ];
 }
 
-/**
- * The revision this branch is measured against: the pull request's own base
- * commit in CI, `origin/develop` locally, or null when neither is available.
- */
-function p73BaseRevision(): ?string
-{
-    $baseSha = getenv('BASE_SHA');
-
-    if (is_string($baseSha) && $baseSha !== '' && p73GitSucceeds(['cat-file', '-e', $baseSha.'^{commit}'])) {
-        return $baseSha;
-    }
-
-    return p73GitSucceeds(['rev-parse', '--verify', 'origin/develop']) ? 'origin/develop' : null;
-}
-
-/**
- * @param  list<string>  $arguments
- */
-function p73GitSucceeds(array $arguments): bool
-{
-    // Every argument is escaped individually: BASE_SHA is an environment
-    // value and this runs through a shell.
-    $command = 'cd '.escapeshellarg(base_path()).' && git '
-        .implode(' ', array_map('escapeshellarg', $arguments))
-        .' >/dev/null 2>&1; echo $?';
-
-    return trim((string) shell_exec($command)) === '0';
-}
-
-/** @return list<string> */
-function p73ChangedFiles(): array
-{
-    $base = p73BaseRevision();
-
-    $baseline = trim((string) shell_exec(
-        'cd '.escapeshellarg(base_path()).' && git diff --name-only '
-            .escapeshellarg((string) $base).' HEAD 2>/dev/null'
-    ));
-
-    return $baseline === '' ? [] : explode("\n", $baseline);
-}
-
-/**
- * The lines this branch adds to, and removes from, one file.
- *
- * `-U0` so the hunks carry no context: every `+` really is an addition. This is
- * what lets a scope guard say "exactly this much changed, and nothing else"
- * about a file the phase deliberately touches, instead of the blunter "this
- * file did not change at all".
- *
- * @return array{added: list<string>, removed: list<string>}
- */
-function p73FileDiff(string $path): array
-{
-    $diff = (string) shell_exec(
-        'cd '.escapeshellarg(base_path()).' && git diff -U0 '
-            .escapeshellarg((string) p73BaseRevision()).' HEAD -- '.escapeshellarg($path).' 2>/dev/null'
-    );
-
-    $added = [];
-    $removed = [];
-
-    foreach (explode("\n", $diff) as $line) {
-        if (str_starts_with($line, '+++') || str_starts_with($line, '---')) {
-            continue;
-        }
-
-        if (str_starts_with($line, '+')) {
-            $added[] = mb_substr($line, 1);
-        } elseif (str_starts_with($line, '-')) {
-            $removed[] = mb_substr($line, 1);
-        }
-    }
-
-    return ['added' => $added, 'removed' => $removed];
-}
-
-/**
- * One file as the base revision has it, so a diff-bounded guard can say where a
- * REMOVED line used to live, not only where an added one landed.
- */
-function p73BaseFile(string $path): string
-{
-    return (string) shell_exec(
-        'cd '.escapeshellarg(base_path()).' && git show '
-            .escapeshellarg((string) p73BaseRevision().':'.$path).' 2>/dev/null'
-    );
-}
-
-/**
- * One file as this branch has it committed.
- *
- * These guards describe the branch, not the working tree — that is what a diff
- * against the base measures, and what CI reviews. Reading the file from HEAD
- * too keeps both halves of an assertion talking about the same thing, instead
- * of comparing a committed diff against uncommitted edits.
- */
-function p73CommittedFile(string $path): string
-{
-    return (string) shell_exec(
-        'cd '.escapeshellarg(base_path()).' && git show HEAD:'.escapeshellarg($path).' 2>/dev/null'
-    );
-}
-
 // =============================================================================
-// What Phase 7.3 adds
+// What Restore Target Data adds
 // =============================================================================
 
 it('adds exactly the five restore primitives and one restore-only library', function () {
-    foreach (p73NewPrimitives() as $path) {
+    foreach (restorePrimitiveScripts() as $path) {
         expect(File::exists(base_path($path)))->toBeTrue("{$path} is missing");
     }
 
@@ -189,7 +59,7 @@ it('keeps one implementation of each restore concern rather than five copies', f
     // restore-common, once each.
     //
     // validate_operation_id is deliberately NOT in this list any more. Phase
-    // 7.4 moved it (and the two identifier FORMATS) up into `common`, because
+    // The GitHub restore surface moved it (and the two identifier FORMATS) up into `common`, because
     // `deploy` has to validate the same operation ID and must not source the
     // restore library. It is still exactly one implementation — asserted
     // below — and every restore primitive still calls that one.
@@ -266,11 +136,11 @@ it('installs every new primitive through the existing target-operations installe
 });
 
 // =============================================================================
-// The GitHub restore surface belongs to Phase 7.4, and only to it
+// The GitHub restore surface belongs to the controlled code alignment, and only to it
 // =============================================================================
 //
-// 7.3 was entirely server-side. 7.4 added the GitHub layer, and its exact
-// inventory is Phase74ScopeTest's business. What stays 7.3's business is the
+// The restore primitives are entirely server-side. The GitHub layer's exact
+// inventory is RestoreOperatorSurfaceScopeTest's business. What stays 7.3's business is the
 // boundary between them: the GitHub layer may DRIVE restore-target through the
 // generic wrapper, and may drive nothing else.
 
@@ -363,7 +233,7 @@ it('activates no production target and changes no DNS', function () {
 
     expect($registry['targets']['tits-guru']['lifecycle'])->toBe('planned');
 
-    foreach (p73OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         $source = File::get($path);
 
         foreach (['cloudflare', 'route53', 'dns_record', 'certbot --force-renewal'] as $forbidden) {
@@ -377,7 +247,7 @@ it('activates no production target and changes no DNS', function () {
 // =============================================================================
 
 it('adds no durable release-artifact archive and no artifact bucket', function () {
-    foreach (p73OperationalFiles() as $path) {
+    foreach (operationalFiles() as $path) {
         $source = File::get($path);
 
         foreach ([
@@ -392,7 +262,7 @@ it('adds no durable release-artifact archive and no artifact bucket', function (
 });
 
 it('leaves the accepted backup subsystem and its manifest schema untouched', function () {
-    $changed = p73ChangedFiles();
+    $changed = branchChangedCodeFiles();
 
     // toContain is variadic in Pest, so a second "message" argument is read as
     // another needle and the negation passes on any file — the diagnostic
@@ -409,7 +279,7 @@ it('leaves the accepted backup subsystem and its manifest schema untouched', fun
     ] as $untouched) {
         expect($changed)->not->toContain($untouched);
     }
-})->skip(fn (): bool => p73BaseRevision() === null,
+})->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
 it('gives backup exactly one fail-closed guard, and no other restore-awareness', function () {
@@ -418,7 +288,7 @@ it('gives backup exactly one fail-closed guard, and no other restore-awareness',
     // current/release.json names, and a backup taken there would label it with
     // that commit — so backup refuses before creating anything, and that is the
     // ONLY thing it knows about restores.
-    $backup = p73CommittedFile('infrastructure/scripts/backup');
+    $backup = committedFile('infrastructure/scripts/backup');
 
     expect(substr_count($backup, 'assert_no_restore_hold'))->toBe(1);
 
@@ -444,23 +314,23 @@ it('gives backup exactly one fail-closed guard, and no other restore-awareness',
 
 it('changes backup by nothing more than that guard', function () {
     // The bounded-diff half, which only says anything when a branch actually
-    // touches the file. Once Phase 7.3 merged, a later branch diffs clean here
+    // touches the file. Once Restore Target Data merged, a later branch diffs clean here
     // — and if one does touch backup, the guard line is the only addition it
     // may carry.
-    $diff = p73FileDiff('infrastructure/scripts/backup');
+    $diff = branchFileDiff('infrastructure/scripts/backup');
 
-    expect($diff['removed'])->toBe([]);
+    // Both halves are judged as code. The additions already were; the
+    // removals were not, which made this guard fire on a comment being
+    // reworded — a change that by definition cannot weaken backup.
+    expect(sourceCodeLines($diff['removed']))->toBe([]);
 
-    $addedCode = array_values(array_filter(
-        array_map('trim', $diff['added']),
-        static fn (string $line): bool => $line !== '' && ! str_starts_with($line, '#'),
-    ));
+    $addedCode = sourceCodeLines($diff['added']);
 
     expect($addedCode)->toBeIn([
         [],
         ['assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"'],
     ]);
-})->skip(fn (): bool => p73BaseRevision() === null,
+})->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
 it('reads the existing backup format and defines no second one', function () {
@@ -488,7 +358,7 @@ it('reads the existing backup format and defines no second one', function () {
 // =============================================================================
 
 it('runs no migration anywhere in the restore path', function () {
-    foreach (p73NewPrimitives() as $path) {
+    foreach (restorePrimitiveScripts() as $path) {
         $source = File::get(base_path($path));
 
         foreach ([
@@ -516,7 +386,7 @@ it('runs no migration anywhere in the restore path', function () {
 });
 
 it('never applies environment.env or server-configuration.tar.gz to a live target', function () {
-    foreach (p73NewPrimitives() as $path) {
+    foreach (restorePrimitiveScripts() as $path) {
         $source = File::get(base_path($path));
 
         foreach (preg_split('/\R/', $source) as $line) {
@@ -557,7 +427,7 @@ it('never applies environment.env or server-configuration.tar.gz to a live targe
 });
 
 it('never switches a release, and never touches the current or previous link', function () {
-    foreach (p73NewPrimitives() as $path) {
+    foreach (restorePrimitiveScripts() as $path) {
         $source = File::get(base_path($path));
 
         expect($source)->not->toMatch('/\bln\s+-sfn?\b/', basename($path).' must never create a release link');
@@ -576,15 +446,19 @@ it('never switches a release, and never touches the current or previous link', f
 it('confines every restore concern in the shared library to its own sections', function () {
     // `common` is sourced by every operational script, so a change to it
     // reaches deploy, rollback, cleanup and backup at once. Two phases have
-    // added to it — 7.3 the guard, 7.4 the alignment authorization — and both
+    // added to it — the guard, and the alignment authorization — and both
     // additions must stay inside their own delimited sections rather than
     // reaching into anything that was already there.
-    $diff = p73FileDiff('infrastructure/scripts/common');
+    $diff = branchFileDiff('infrastructure/scripts/common');
 
-    $common = p73CommittedFile('infrastructure/scripts/common');
+    $common = committedFile('infrastructure/scripts/common');
 
-    $guardStart = mb_strpos($common, '# --- restore guard (Phase 7.3) ---');
-    $alignmentStart = mb_strpos($common, '# --- restore alignment authorization (Phase 7.4) ---');
+    // Matched by PREFIX, not by the whole banner. These markers end in a run
+    // of dashes padded to a fixed width, so any edit to the words inside them
+    // changes the full string — and a guard that silently stops finding its
+    // own section does not fail, it just stops guarding.
+    $guardStart = mb_strpos($common, '# --- restore guard');
+    $alignmentStart = mb_strpos($common, '# --- restore alignment authorization');
     $end = mb_strpos($common, '# --- deployment target registry (end) ---');
 
     expect($guardStart)->not->toBeFalse('the restore guard section is missing from common');
@@ -593,17 +467,20 @@ it('confines every restore concern in the shared library to its own sections', f
 
     $restoreSections = mb_substr($common, $guardStart, $end - $guardStart);
 
-    // Every line this branch added to common belongs to one of them.
-    foreach ($diff['added'] as $line) {
+    // Every line of CODE this branch added to common belongs to one of them.
+    // Comments are excluded deliberately: `common` carries prose all over it,
+    // and rewording a comment somewhere else in the file is not a restore
+    // concern leaking out of its section.
+    foreach (sourceCodeLines($diff['added']) as $line) {
         expect($restoreSections)->toContain($line);
     }
 
     // And so does every line it removed — measured against the version it was
-    // removed from. A restore phase may rewrite its OWN text (7.4 had to: the
+    // removed from. A restore change may rewrite its OWN text (the alignment work had to: the
     // hold refusal used to say controlled alignment did not exist yet), but it
     // may never touch a line of anything that was already in common.
-    $base = p73BaseFile('infrastructure/scripts/common');
-    $baseGuardStart = mb_strpos($base, '# --- restore guard (Phase 7.3) ---');
+    $base = baseRevisionFile('infrastructure/scripts/common');
+    $baseGuardStart = mb_strpos($base, '# --- restore guard');
     $baseEnd = mb_strpos($base, '# --- deployment target registry (end) ---');
 
     if ($base === '') {
@@ -614,13 +491,13 @@ it('confines every restore concern in the shared library to its own sections', f
     } elseif ($baseGuardStart !== false && $baseEnd !== false && $baseEnd > $baseGuardStart) {
         $baseSections = mb_substr($base, $baseGuardStart, $baseEnd - $baseGuardStart);
 
-        foreach ($diff['removed'] as $line) {
+        foreach (sourceCodeLines($diff['removed']) as $line) {
             expect($baseSections)->toContain($line);
         }
     } else {
         // A base predating the restore guard entirely: there is nothing of ours
-        // in it, so nothing may have been removed.
-        expect($diff['removed'])->toBe([]);
+        // in it, so no line of code may have been removed.
+        expect(sourceCodeLines($diff['removed']))->toBe([]);
     }
 
     // The four helpers, and not one filesystem mutation between them: `common`
@@ -636,24 +513,29 @@ it('confines every restore concern in the shared library to its own sections', f
     }
 
     expect($restoreSections)->not->toMatch('/^\s*(rm|mv|install|touch|chmod|chown)\s/m');
-})->skip(fn (): bool => p73BaseRevision() === null,
+})->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
 it('does not weaken deploy, rollback, cleanup or any earlier phase contract', function () {
-    $changed = p73ChangedFiles();
+    $changed = branchChangedCodeFiles();
 
-    // Files no phase after 7.3 has any business touching to build a restore
+    // Files nothing built on the restore primitives has any business touching to build a restore
     // surface. deploy/rollback/cleanup are deliberately NOT in this list any
-    // more: Phase 7.4 gives each of them a fail-closed refusal while a restore
+    // more: the controlled code alignment gives each of them a fail-closed refusal while a restore
     // guard exists, and gives deploy its controlled-alignment mode — both of
-    // which are asserted in full by Phase74ScopeTest and by their own test
+    // which are asserted in full by RestoreOperatorSurfaceScopeTest and by their own test
     // files. (See the note above on toContain's variadic signature.)
     foreach ([
         'infrastructure/scripts/targets',
         'infrastructure/scripts/health-check',
         'infrastructure/scripts/status',
-        'infrastructure/scripts/prepare-host',
         'infrastructure/scripts/bootstrap-host',
+        // prepare-host is deliberately NOT here any more. It printed one
+        // operator-facing label carrying a phase number, which the naming
+        // convention in CLAUDE.md — enforced by ReleaseBookkeepingTest over
+        // every operational script — requires to be removed. Two guards asked
+        // for opposite things about the same line; freezing a label is not
+        // what this one is for, and its remaining entries still hold.
         'infrastructure/config/deployment-targets.json',
         'infrastructure/templates/deployment.conf.example',
     ] as $untouched) {
@@ -673,7 +555,7 @@ it('does not weaken deploy, rollback, cleanup or any earlier phase contract', fu
     }
 
     expect(substr_count($deploy, '--restore-operation)'))->toBe(1, 'deploy has exactly one restore-aware flag');
-})->skip(fn (): bool => p73BaseRevision() === null,
+})->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
 it('leaves a state and journal contract a later phase can build the alignment deploy on', function () {

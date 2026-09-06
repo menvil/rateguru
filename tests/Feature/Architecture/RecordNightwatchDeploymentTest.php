@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.2A: infrastructure/scripts/record-nightwatch-deployment and its
+ * the deployment observability work: infrastructure/scripts/record-nightwatch-deployment and its
  * generic sudo wrapper — the narrow server-side primitive that records ONE
  * already-completed deployment state transition in Laravel Nightwatch.
  *
@@ -152,7 +152,7 @@ function nwTargetRoot(string $scratch, array $options = []): string
     $releaseRoot = $root.'/releases/'.$release;
 
     mkdir($releaseRoot, 0o755, true);
-    // The deployment lock directory slice 5.3 creates on a real host.
+    // The deployment lock directory install-bootstrap-host-layout creates on a real host.
     mkdir($root.'/locks', 0o755, true);
     touch($releaseRoot.'/artisan');
     file_put_contents($releaseRoot.'/release.json', json_encode([
@@ -686,7 +686,7 @@ it('keeps the whole Nightwatch integration removable in one step', function () {
 
     // The marker primitive, its wrapper and its sudoers grant are owned by the
     // Nightwatch installer — not by install-target-operations' bundle or
-    // install-target-perimeter's wrappers — so a Phase 6C rejection removes the
+    // install-target-perimeter's wrappers — so the Nightwatch decision rejection removes the
     // entire integration with `--remove`, and no host is ever required to
     // carry any of it.
     // The full repository-relative paths, each asserted on its own: the three
@@ -704,7 +704,7 @@ it('keeps the whole Nightwatch integration removable in one step', function () {
 
     expect($installer)->toContain('remove_marker_files');
 
-    // The accepted Phase 5 contracts are untouched by Phase 7.2.
+    // The accepted the clean-host bootstrap contracts are untouched by Prepare Host.
     expect(File::get(base_path('infrastructure/scripts/install-target-operations')))
         ->not->toContain('record-nightwatch-deployment');
     expect(File::get(base_path('infrastructure/scripts/install-target-perimeter')))

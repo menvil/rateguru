@@ -67,7 +67,7 @@ it('keeps every infrastructure CLI script executable and every sourced library n
         requiredCliManifestNames(),
     );
 
-    // Two sourced libraries since Phase 7.3: common, and the restore-only
+    // Two sourced libraries since Restore Target Data: common, and the restore-only
     // restore-common the five restore primitives share.
     $sourcedLibraries = array_map(
         fn (string $name): string => "infrastructure/scripts/{$name}",
@@ -338,7 +338,7 @@ it('deploy delegates its release-side CLI executable-bit guard to the shared ver
         $matches,
     ))->toBe(1, 'could not locate the CLI executable-bit verification block in scripts/deploy');
 
-    // Phase 4 slice 5: the hardcoded absolute path became the gated
+    // the target-aware migration: the hardcoded absolute path became the gated
     // VERIFY_REQUIRED_CLIS_BIN constant (defaulting to the exact same path),
     // so deploys can be pointed at a stub in tests via
     // RATEGURU_VERIFY_REQUIRED_CLIS_BIN — see DeployTest.php.

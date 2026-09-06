@@ -109,7 +109,7 @@ it('builds through the one shared build implementation, passing only production 
 });
 
 it('builds the production artifact exactly once and promotes that same artifact', function () {
-    // Part B of the operational model: validate -> build ONE artifact ->
+    // The operational model: validate -> build ONE artifact ->
     // staging -> approval -> production, with no rebuild in between. Proved
     // structurally rather than by wording.
     $buildJobs = collect(data_get($this->releaseWorkflow, 'jobs'))

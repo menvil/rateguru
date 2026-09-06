@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 7.3: `restore-target` — the whole live data restore, end to end.
+ * Restore Target Data: `restore-target` — the whole live data restore, end to end.
  *
  * Every test here runs the REAL orchestrator against the REAL fetch-backup,
  * verify-backup, restore-database and restore-storage it drives — only the
@@ -27,17 +27,17 @@ function restoreTargetScript(): string
  */
 function restoreTargetFixture(string $scratch, array $options = []): array
 {
-    p73TargetTree($scratch, [
-        'source_sha' => $options['current_source_sha'] ?? P73_SOURCE_SHA,
-        'release' => $options['current_release'] ?? P73_RELEASE,
+    targetTreeFixture($scratch, [
+        'source_sha' => $options['current_source_sha'] ?? FIXTURE_SOURCE_SHA,
+        'release' => $options['current_release'] ?? FIXTURE_RELEASE,
     ]);
-    p73FakePostgres($scratch, $options['postgres'] ?? []);
-    p73RuntimeStubs($scratch);
+    installFakePostgres($scratch, $options['postgres'] ?? []);
+    installTargetRuntimeStubs($scratch);
 
     // The backup being restored from, and a byte-identical template the
     // emergency `backup` stub copies into place as the new latest backup.
-    p73BuildBackup($scratch.'/backups/parity', '20260115-120000', $options['backup'] ?? []);
-    p73BuildBackup($scratch.'/emergency-src', '20260116-090000');
+    buildBackupFixture($scratch.'/backups/parity', '20260115-120000', $options['backup'] ?? []);
+    buildBackupFixture($scratch.'/emergency-src', '20260116-090000');
     exec('mv '.escapeshellarg($scratch.'/emergency-src/20260116-090000').' '.escapeshellarg($scratch.'/emergency-template'));
 
     if (($options['scheduler'] ?? true) === true) {
@@ -48,7 +48,7 @@ function restoreTargetFixture(string $scratch, array $options = []): array
         );
     }
 
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
     return ['registry' => $registryPath, 'targets' => $targetsPath];
 }
@@ -58,21 +58,21 @@ function restoreTargetFixture(string $scratch, array $options = []): array
  */
 function restoreTargetRun(string $scratch, array $arguments, array $envOverrides = []): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-    $env = p73BaseEnv($scratch, $registryPath, $targetsPath, array_merge(
-        p73PostgresEnv($scratch),
-        p73RuntimeEnv($scratch),
+    $env = infraScriptEnv($scratch, $registryPath, $targetsPath, array_merge(
+        fakePostgresEnv($scratch),
+        targetRuntimeEnv($scratch),
         [
-            'RATEGURU_RESTORE_FETCH_BACKUP_BIN' => p73PatchedScript($scratch, 'fetch-backup'),
-            'RATEGURU_RESTORE_VERIFY_BACKUP_BIN' => p73PatchedScript($scratch, 'verify-backup'),
-            'RATEGURU_RESTORE_DATABASE_BIN' => p73PatchedScript($scratch, 'restore-database'),
-            'RATEGURU_RESTORE_STORAGE_BIN' => p73PatchedScript($scratch, 'restore-storage'),
+            'RATEGURU_RESTORE_FETCH_BACKUP_BIN' => patchedInfraScript($scratch, 'fetch-backup'),
+            'RATEGURU_RESTORE_VERIFY_BACKUP_BIN' => patchedInfraScript($scratch, 'verify-backup'),
+            'RATEGURU_RESTORE_DATABASE_BIN' => patchedInfraScript($scratch, 'restore-database'),
+            'RATEGURU_RESTORE_STORAGE_BIN' => patchedInfraScript($scratch, 'restore-storage'),
         ],
         $envOverrides,
     ));
 
-    [$exit, $output] = p73Run(p73PatchedScript($scratch, 'restore-target'), $arguments, $env);
+    [$exit, $output] = runInfraScript(patchedInfraScript($scratch, 'restore-target'), $arguments, $env);
 
     return ['exit' => $exit, 'output' => $output];
 }
@@ -124,7 +124,7 @@ function restoreTargetSchedulerPresent(string $scratch): bool
 // =============================================================================
 
 it('requires an exact backup and a source, and offers no latest', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -145,7 +145,7 @@ it('requires an exact backup and a source, and offers no latest', function () {
         expect($bothModes['exit'])->not->toBe(0);
         expect($bothModes['output'])->toContain('only one of --apply, --inspect or --resume may be given');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -154,7 +154,7 @@ it('requires an exact backup and a source, and offers no latest', function () {
 // =============================================================================
 
 it('restores database and storage, resumes the target, and reports an aligned restore', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -166,7 +166,7 @@ it('restores database and storage, resumes the target, and reports an aligned re
             ->toContain('RESTORE DATA COMPLETE: YES')
             ->toContain('CODE ALIGNMENT: ALIGNED')
             ->toContain('TARGET RESUMED: YES')
-            ->toContain('BACKUP SOURCE SHA: '.P73_SOURCE_SHA);
+            ->toContain('BACKUP SOURCE SHA: '.FIXTURE_SOURCE_SHA);
 
         // The data actually changed.
         $storage = restoreTargetStorage($scratch);
@@ -175,7 +175,7 @@ it('restores database and storage, resumes the target, and reports an aligned re
 
         // The canonical database is the restored one; the pre-restore copy
         // was dropped at commit and no staging leftovers remain.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(array_values(array_diff(scandir($storage), ['.', '..'])))
             ->toEqualCanonicalizing(['app', 'framework']);
 
@@ -185,12 +185,12 @@ it('restores database and storage, resumes the target, and reports an aligned re
         expect(restoreTargetSchedulerPresent($scratch))->toBeTrue();
         expect(File::get($scratch.'/health-check.log'))->toContain('--target parity-target');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('never rewrites shared/.env, the current link, the previous link or any server configuration', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -206,15 +206,15 @@ it('never rewrites shared/.env, the current link, the previous link or any serve
         expect(file_exists($scratch.'/target/previous'))->toBeFalse();
 
         // The release tree itself is untouched: no code was deployed.
-        expect(File::get($scratch.'/target/releases/'.P73_RELEASE.'/release.json'))
-            ->toContain(P73_SOURCE_SHA);
+        expect(File::get($scratch.'/target/releases/'.FIXTURE_RELEASE.'/release.json'))
+            ->toContain(FIXTURE_SOURCE_SHA);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('writes a restore history record carrying operational identity and no secret', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -233,10 +233,10 @@ it('writes a restore history record carrying operational identity and no secret'
             'backup_namespace' => 'parity',
             'source' => 'local',
             'backup' => '20260115-120000',
-            'backup_release' => P73_RELEASE,
-            'backup_source_sha' => P73_SOURCE_SHA,
-            'current_release_before' => P73_RELEASE,
-            'current_source_sha_before' => P73_SOURCE_SHA,
+            'backup_release' => FIXTURE_RELEASE,
+            'backup_source_sha' => FIXTURE_SOURCE_SHA,
+            'current_release_before' => FIXTURE_RELEASE,
+            'current_source_sha_before' => FIXTURE_SOURCE_SHA,
             'emergency_backup' => '20260116-090000',
             'code_alignment' => 'ALIGNED',
             'runtime_resumed' => 'yes',
@@ -253,7 +253,7 @@ it('writes a restore history record carrying operational identity and no secret'
 
         expect(substr(sprintf('%o', fileperms($scratch.'/restores/restore-history.jsonl')), -4))->toBe('0600');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -263,7 +263,7 @@ it('writes a restore history record carrying operational identity and no secret'
 // =============================================================================
 
 it('stages and verifies everything before quiescing, and takes the emergency backup before any live mutation', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -303,22 +303,22 @@ it('stages and verifies everything before quiescing, and takes the emergency bac
         expect(File::get($scratch.'/restore-test.log'))->toContain('--target parity-target');
         expect($positions['emergency pre-restore backup'])->toBeLessThan($positions['activate database']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('performs no live mutation when the emergency backup fails', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
-        $result = restoreTargetApply($scratch, ['P73_BACKUP_EXIT' => '1']);
+        $result = restoreTargetApply($scratch, ['RGTEST_BACKUP_EXIT' => '1']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('no live data was mutated');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
 
         // The runtime went back to exactly what it was.
@@ -331,45 +331,45 @@ it('performs no live mutation when the emergency backup fails', function () {
             'failed_step' => 'emergency pre-restore backup',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('performs no live mutation when the emergency backup fails its restore test', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
-        $result = restoreTargetApply($scratch, ['P73_RESTORE_TEST_EXIT' => '1']);
+        $result = restoreTargetApply($scratch, ['RGTEST_RESTORE_TEST_EXIT' => '1']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('failed its restore test');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('performs no live mutation when the emergency backup cannot be unambiguously identified', function (string $ids, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
-        $result = restoreTargetApply($scratch, ['P73_EMERGENCY_BACKUP_IDS' => $ids]);
+        $result = restoreTargetApply($scratch, ['RGTEST_EMERGENCY_BACKUP_IDS' => $ids]);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain($expected);
         expect($result['output'])->toContain('no live data was mutated');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     'two new backups' => ['20260116-090000 20260116-091500', '(2 new backups appeared)'],
@@ -377,7 +377,7 @@ it('performs no live mutation when the emergency backup cannot be unambiguously 
 ]);
 
 it('keeps the selected backup usable even though the emergency backup applies retention', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -387,7 +387,7 @@ it('keeps the selected backup usable even though the emergency backup applies re
         $backupStub = File::get($scratch.'/bin/backup-stub');
         file_put_contents(
             $scratch.'/bin/backup-stub',
-            $backupStub."\nrm -rf \"\${P73_BACKUP_NAMESPACE_ROOT}/20260115-120000\"\n",
+            $backupStub."\nrm -rf \"\${RGTEST_BACKUP_NAMESPACE_ROOT}/20260115-120000\"\n",
         );
 
         $result = restoreTargetApply($scratch);
@@ -396,7 +396,7 @@ it('keeps the selected backup usable even though the emergency backup applies re
         expect(is_dir($scratch.'/backups/parity/20260115-120000'))->toBeFalse('retention removed the source backup');
         expect(is_file(restoreTargetStorage($scratch).'/app/restored-marker.txt'))->toBeTrue('the restore still used it');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -405,7 +405,7 @@ it('keeps the selected backup usable even though the emergency backup applies re
 // =============================================================================
 
 it('brings the target down for the restore and back up afterwards when it was up before', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -420,12 +420,12 @@ it('brings the target down for the restore and back up afterwards when it was up
         expect($php)->toContain('artisan up');
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('leaves a target that was already in maintenance in maintenance', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -440,12 +440,12 @@ it('leaves a target that was already in maintenance in maintenance', function ()
 
         expect(restoreTargetHistory($scratch)[0]['status'])->toBe('completed');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('stops a running queue program and starts it again, touching only this target group', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -463,12 +463,12 @@ it('stops a running queue program and starts it again, touching only this target
             expect($supervisor)->not->toContain($forbidden);
         }
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('leaves a queue program that was already stopped stopped', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -481,12 +481,12 @@ it('leaves a queue program that was already stopped stopped', function () {
         expect(File::get($scratch.'/supervisor.log'))->not->toContain('start parity-queue');
         expect(restoreTargetQueueState($scratch))->toBe('STOPPED');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('stops a queue group that is only partly running, and leaves it stopped afterwards', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -507,12 +507,12 @@ it('stops a queue group that is only partly running, and leaves it stopped after
         expect(trim(File::get($scratch.'/supervisor-second-state')))->toBe('STOPPED');
         expect(File::get($scratch.'/supervisor.log'))->not->toContain('start parity-queue');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to restore when the target queue program cannot be observed at all', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -522,7 +522,7 @@ it('refuses to restore when the target queue program cannot be observed at all',
         // reports both as exit code 4, distinct from the 3 it uses for a group
         // that is merely stopped.
         $result = restoreTargetApply($scratch, [
-            'P73_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock refused connection',
+            'RGTEST_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock refused connection',
         ]);
 
         expect($result['exit'])->not->toBe(0);
@@ -530,16 +530,16 @@ it('refuses to restore when the target queue program cannot be observed at all',
         expect($result['output'])->toContain('supervisorctl status exited 4');
         expect($result['output'])->toContain('refused connection');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('holds this target cron entry outside cron.d for the restore and restores it exactly', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -564,12 +564,12 @@ it('holds this target cron entry outside cron.d for the restore and restores it 
         expect(File::get($scratch.'/pgrep.log'))->toContain('artisan schedule:run');
         expect($result['output'])->not->toContain('systemctl stop cron');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('never invents a cron entry that did not exist before', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, ['scheduler' => false]);
@@ -581,22 +581,22 @@ it('never invents a cron entry that did not exist before', function () {
         expect($result['output'])->toContain('leaving the scheduler exactly as it was');
         expect(restoreTargetSchedulerPresent($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to swap data underneath a scheduler process that will not stop', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
-        $result = restoreTargetApply($scratch, ['P73_PGREP_EXIT' => '0']);
+        $result = restoreTargetApply($scratch, ['RGTEST_PGREP_EXIT' => '0']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('refusing to swap data underneath a writer');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
 
         // The runtime was put back, including the held cron entry.
@@ -604,7 +604,7 @@ it('refuses to swap data underneath a scheduler process that will not stop', fun
         expect(restoreTargetQueueState($scratch))->toBe('RUNNING');
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -614,12 +614,12 @@ it('refuses to swap data underneath a scheduler process that will not stop', fun
 // =============================================================================
 
 it('holds a queue whose start took effect but never reached RUNNING', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -634,7 +634,7 @@ it('holds a queue whose start took effect but never reached RUNNING', function (
         $result = restoreTargetRun(
             $scratch,
             ['--resume', '--target', 'parity-target', '--operation', $operation],
-            ['P73_SUPERVISOR_START_STATE' => 'BACKOFF'],
+            ['RGTEST_SUPERVISOR_START_STATE' => 'BACKOFF'],
         );
 
         expect($result['exit'])->not->toBe(0);
@@ -649,12 +649,12 @@ it('holds a queue whose start took effect but never reached RUNNING', function (
 
         expect(restoreTargetHistory($scratch)[1])->toMatchArray(['status' => 'failed-held']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('restores a queue whose stop took effect but never confirmed STOPPED', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -663,14 +663,14 @@ it('restores a queue whose stop took effect but never confirmed STOPPED', functi
         // in FATAL rather than STOPPED, so the confirmation times out and the
         // "this restore stopped it" flag is never set. The queue was RUNNING
         // before, so the failure path must still bring it back.
-        $result = restoreTargetApply($scratch, ['P73_SUPERVISOR_STOP_STATE' => 'FATAL']);
+        $result = restoreTargetApply($scratch, ['RGTEST_SUPERVISOR_STOP_STATE' => 'FATAL']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('did not reach STOPPED within the wait budget');
 
         // No live mutation, and the queue that was running before is running
         // again — decided from observed state, not from the unset flag.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
         expect(restoreTargetQueueState($scratch))->toBe('RUNNING');
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
@@ -678,17 +678,17 @@ it('restores a queue whose stop took effect but never confirmed STOPPED', functi
 
         expect(restoreTargetHistory($scratch)[0])->toMatchArray(['status' => 'failed']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('re-holds a cron entry that was moved back before its metadata could be restored', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -703,24 +703,24 @@ it('re-holds a cron entry that was moved back before its metadata could be resto
         file_put_contents($sabotaged, str_replace(
             '    chown "${owner}" "${SCHEDULER_FILE}" || {',
             '    false || {',
-            File::get(p73PatchedScript($scratch, 'restore-target')),
+            File::get(patchedInfraScript($scratch, 'restore-target')),
         ));
         chmod($sabotaged, 0o755);
 
-        [$registryPath, $targetsPath] = p73Registry($scratch);
+        [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-        $env = p73BaseEnv($scratch, $registryPath, $targetsPath, array_merge(
-            p73PostgresEnv($scratch),
-            p73RuntimeEnv($scratch),
+        $env = infraScriptEnv($scratch, $registryPath, $targetsPath, array_merge(
+            fakePostgresEnv($scratch),
+            targetRuntimeEnv($scratch),
             [
-                'RATEGURU_RESTORE_FETCH_BACKUP_BIN' => p73PatchedScript($scratch, 'fetch-backup'),
-                'RATEGURU_RESTORE_VERIFY_BACKUP_BIN' => p73PatchedScript($scratch, 'verify-backup'),
-                'RATEGURU_RESTORE_DATABASE_BIN' => p73PatchedScript($scratch, 'restore-database'),
-                'RATEGURU_RESTORE_STORAGE_BIN' => p73PatchedScript($scratch, 'restore-storage'),
+                'RATEGURU_RESTORE_FETCH_BACKUP_BIN' => patchedInfraScript($scratch, 'fetch-backup'),
+                'RATEGURU_RESTORE_VERIFY_BACKUP_BIN' => patchedInfraScript($scratch, 'verify-backup'),
+                'RATEGURU_RESTORE_DATABASE_BIN' => patchedInfraScript($scratch, 'restore-database'),
+                'RATEGURU_RESTORE_STORAGE_BIN' => patchedInfraScript($scratch, 'restore-storage'),
             ],
         ));
 
-        [$exit, $output] = p73Run($sabotaged, ['--resume', '--target', 'parity-target', '--operation', $operation], $env);
+        [$exit, $output] = runInfraScript($sabotaged, ['--resume', '--target', 'parity-target', '--operation', $operation], $env);
 
         expect($exit)->not->toBe(0);
         expect($output)->toContain('could not restore the scheduler cron entry ownership');
@@ -731,17 +731,17 @@ it('re-holds a cron entry that was moved back before its metadata could be resto
         expect(restoreTargetQueueState($scratch))->toBe('STOPPED');
         expect(restoreTargetMaintenanceActive($scratch))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('does not call a resume successful when the target stays down despite artisan up', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -752,14 +752,14 @@ it('does not call a resume successful when the target stays down despite artisan
         $result = restoreTargetRun(
             $scratch,
             ['--resume', '--target', 'parity-target', '--operation', $operation],
-            ['P73_ARTISAN_UP_INEFFECTIVE' => '1'],
+            ['RGTEST_ARTISAN_UP_INEFFECTIVE' => '1'],
         );
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('still in maintenance after artisan up');
         expect(restoreTargetMaintenanceActive($scratch))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -768,7 +768,7 @@ it('does not call a resume successful when the target stays down despite artisan
 // =============================================================================
 
 it('refuses to restore when the scheduler cannot be observed', function (array $env, string $expected) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -781,7 +781,7 @@ it('refuses to restore when the scheduler cannot be observed', function (array $
         // The connection barrier only covers PostgreSQL; the storage swap has
         // no equivalent, so an unprovable scheduler stops the restore before
         // anything live is touched.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
 
         // And the runtime is put back.
@@ -789,12 +789,12 @@ it('refuses to restore when the scheduler cannot be observed', function (array $
         expect(restoreTargetQueueState($scratch))->toBe('RUNNING');
         expect(restoreTargetSchedulerPresent($scratch))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     // pgrep exit 2 is a usage error, 3 a fatal one: the observation is broken,
     // which is never the same as "no process matched".
-    'a broken pgrep' => [['P73_PGREP_EXIT' => '2'], 'cannot observe'],
+    'a broken pgrep' => [['RGTEST_PGREP_EXIT' => '2'], 'cannot observe'],
     'no pgrep at all' => [['RATEGURU_RESTORE_PGREP_BIN' => '/definitely/not/pgrep'], 'is unavailable'],
 ]);
 
@@ -803,7 +803,7 @@ it('refuses to restore when the scheduler cannot be observed', function (array $
 // =============================================================================
 
 it('compensates a failed storage activation, restoring both the database and the storage tree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -811,7 +811,7 @@ it('compensates a failed storage activation, restoring both the database and the
         // The staged tree disappears between the database activation and the
         // storage activation: the swap fails after the database was already
         // switched, which is exactly the state compensation exists for.
-        $storageBin = p73PatchedScript($scratch, 'restore-storage');
+        $storageBin = patchedInfraScript($scratch, 'restore-storage');
         $sabotaged = $scratch.'/sabotaged-restore-storage';
         file_put_contents($sabotaged, str_replace(
             '    log "${LABEL} activating restored storage tree"',
@@ -827,7 +827,7 @@ it('compensates a failed storage activation, restoring both the database and the
 
         // Both halves are back, and the staged copies were discarded rather
         // than left on the host.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
         expect(is_file(restoreTargetStorage($scratch).'/app/restored-marker.txt'))->toBeFalse();
@@ -842,12 +842,12 @@ it('compensates a failed storage activation, restoring both the database and the
             'compensation_status' => 'complete',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('compensates a database activation that failed between its two renames', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -855,7 +855,7 @@ it('compensates a database activation that failed between its two renames', func
         // The very first rename fails, so activation never reaches the phase
         // update. Compensation must still be allowed there — refusing it
         // would leave a fully recoverable target held.
-        $result = restoreTargetApply($scratch, ['P73_RENAME_FAIL_TO_PREFIX' => 'rateguru_pre_']);
+        $result = restoreTargetApply($scratch, ['RGTEST_RENAME_FAIL_TO_PREFIX' => 'rateguru_pre_']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('could not rename parity_db aside');
@@ -863,7 +863,7 @@ it('compensates a database activation that failed between its two renames', func
 
         // The live database survived, and the connection barrier a failed
         // activation left behind was lifted.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(trim(File::get($scratch.'/pg/db/parity_db')))->toBe('parity_app t');
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
 
@@ -877,19 +877,19 @@ it('compensates a database activation that failed between its two renames', func
             'failed_step' => 'activate database',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('compensates a failed final verification and does not mask the original error', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
         // A storage tree whose mode normalization is undone after the swap:
         // final verification refuses it, and both halves compensate.
-        $storageBin = p73PatchedScript($scratch, 'restore-storage');
+        $storageBin = patchedInfraScript($scratch, 'restore-storage');
         $sabotaged = $scratch.'/sabotaged-verify-restore-storage';
         file_put_contents($sabotaged, str_replace(
             '    restore_state_set "${STATE_FILE}" phase storage-activated',
@@ -905,7 +905,7 @@ it('compensates a failed final verification and does not mask the original error
         expect($result['output'])->toContain('expected 2710');
         expect($result['output'])->toContain('compensating');
 
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
 
         expect(restoreTargetHistory($scratch)[0])->toMatchArray([
@@ -914,12 +914,12 @@ it('compensates a failed final verification and does not mask the original error
             'failed_step' => 'verify restored data',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('holds the target and demands manual recovery when compensation itself cannot complete', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -928,7 +928,7 @@ it('holds the target and demands manual recovery when compensation itself cannot
         // live tree's mode is broken: final verification refuses the result,
         // and the storage half can no longer be moved back out of the way —
         // compensation is genuinely impossible, not merely unnecessary.
-        $storageBin = p73PatchedScript($scratch, 'restore-storage');
+        $storageBin = patchedInfraScript($scratch, 'restore-storage');
         $sabotaged = $scratch.'/broken-restore-storage';
         file_put_contents($sabotaged, str_replace(
             '    restore_state_set "${STATE_FILE}" phase storage-activated',
@@ -954,7 +954,7 @@ it('holds the target and demands manual recovery when compensation itself cannot
             'compensation_status' => 'incomplete',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -963,12 +963,12 @@ it('holds the target and demands manual recovery when compensation itself cannot
 // =============================================================================
 
 it('completes the data restore but holds the runtime when the code does not match the backup', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $result = restoreTargetApply($scratch);
@@ -979,13 +979,13 @@ it('completes the data restore but holds the runtime when the code does not matc
             ->toContain('RESTORE DATA COMPLETE: YES')
             ->toContain('CODE ALIGNMENT: REQUIRED')
             ->toContain('TARGET RESUMED: NO')
-            ->toContain('BACKUP SOURCE SHA: '.P73_SOURCE_SHA)
-            ->toContain('CURRENT SOURCE SHA: '.P73_OTHER_SOURCE_SHA)
+            ->toContain('BACKUP SOURCE SHA: '.FIXTURE_SOURCE_SHA)
+            ->toContain('CURRENT SOURCE SHA: '.FIXTURE_OTHER_SOURCE_SHA)
             ->toContain('restore-target --resume --target parity-target --operation');
 
         // The data IS restored and committed.
         expect(is_file(restoreTargetStorage($scratch).'/app/restored-marker.txt'))->toBeTrue();
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
 
         // The runtime is intentionally held.
         expect(restoreTargetMaintenanceActive($scratch))->toBeTrue();
@@ -993,7 +993,7 @@ it('completes the data restore but holds the runtime when the code does not matc
         expect(restoreTargetSchedulerPresent($scratch))->toBeFalse();
 
         // No release was switched and no migration was run.
-        expect(readlink($scratch.'/target/current'))->toBe($scratch.'/target/releases/'.P73_OTHER_RELEASE);
+        expect(readlink($scratch.'/target/current'))->toBe($scratch.'/target/releases/'.FIXTURE_OTHER_RELEASE);
         expect(File::get($scratch.'/php.log'))->not->toContain('migrate');
         expect(File::get($scratch.'/health-check.log'))->toBe('', 'a held target is not health checked as if it were serving');
 
@@ -1003,7 +1003,7 @@ it('completes the data restore but holds the runtime when the code does not matc
             'runtime_resumed' => 'no',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1018,21 +1018,21 @@ function restoreTargetHeldOperation(string $scratch): string
     expect($result['exit'])->toBe(0, $result['output']);
     expect($result['output'])->toContain('CODE ALIGNMENT: REQUIRED');
 
-    $operations = p73OperationIds($result['output']);
+    $operations = operationIdsIn($result['output']);
     expect($operations)->toHaveCount(1);
 
     return $operations[0];
 }
 
-/** Deploys the aligned release, the way a Phase 7.4 alignment deploy would. */
+/** Deploys the aligned release, the way the controlled alignment deploy would. */
 function restoreTargetAlignCode(string $scratch): void
 {
-    $aligned = $scratch.'/target/releases/'.P73_RELEASE;
+    $aligned = $scratch.'/target/releases/'.FIXTURE_RELEASE;
     mkdir($aligned, 0o755, true);
     file_put_contents($aligned.'/artisan', "<?php\n");
     file_put_contents(
         $aligned.'/release.json',
-        json_encode(['project' => 'rateguru', 'release' => P73_RELEASE, 'source_sha' => P73_SOURCE_SHA]),
+        json_encode(['project' => 'rateguru', 'release' => FIXTURE_RELEASE, 'source_sha' => FIXTURE_SOURCE_SHA]),
     );
 
     unlink($scratch.'/target/current');
@@ -1040,12 +1040,12 @@ function restoreTargetAlignCode(string $scratch): void
 }
 
 it('resumes a held target once the deployed code carries the backup source_sha', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1070,17 +1070,17 @@ it('resumes a held target once the deployed code carries the backup source_sha',
         // The completed operation's workspace is cleaned up.
         expect(is_dir($scratch.'/run/restores/parity-target/'.$operation))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to resume while the code still does not match, and leaves the target held', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1095,17 +1095,17 @@ it('refuses to resume while the code still does not match, and leaves the target
         expect(restoreTargetQueueState($scratch))->toBe('STOPPED');
         expect(restoreTargetSchedulerPresent($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to resume an unknown operation, another target operation, or one that is not held', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $unknown = restoreTargetRun($scratch, ['--resume', '--target', 'parity-target', '--operation', '20260101-000000-ffffff']);
@@ -1113,7 +1113,7 @@ it('refuses to resume an unknown operation, another target operation, or one tha
         expect($unknown['output'])->toContain('restore operation workspace does not exist');
 
         $operation = restoreTargetHeldOperation($scratch);
-        $state = p73State($scratch.'/run/restores/parity-target/'.$operation);
+        $state = restoreOperationState($scratch.'/run/restores/parity-target/'.$operation);
 
         $state['target'] = 'someone-else';
         file_put_contents($scratch.'/run/restores/parity-target/'.$operation.'/state.json', json_encode($state));
@@ -1130,7 +1130,7 @@ it('refuses to resume an unknown operation, another target operation, or one tha
         expect($notHeld['exit'])->not->toBe(0);
         expect($notHeld['output'])->toContain('--resume only applies to an operation whose data restore completed');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1140,7 +1140,7 @@ it('refuses a target whose releases root is a symlink, on both apply and resume'
     // so the containment check alone would accept a release tree this target
     // does not own, and the whole code-alignment decision is made against
     // that identity. deploy, rollback and cleanup all hold the same line.
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1154,18 +1154,18 @@ it('refuses a target whose releases root is a symlink, on both apply and resume'
         expect($result['output'])->toContain('releases root must be a real directory, not a symlink');
 
         expect(is_dir($scratch.'/run/restores'))->toBeFalse('nothing may be staged for an uncontained target');
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1186,17 +1186,17 @@ it('refuses a target whose releases root is a symlink, on both apply and resume'
         expect(restoreTargetQueueState($scratch))->toBe('STOPPED');
         expect(restoreTargetSchedulerPresent($scratch))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to resume when current is malformed or resolves outside the releases tree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1207,7 +1207,7 @@ it('refuses to resume when current is malformed or resolves outside the releases
         file_put_contents($scratch.'/rogue-release/artisan', "<?php\n");
         file_put_contents(
             $scratch.'/rogue-release/release.json',
-            json_encode(['release' => P73_RELEASE, 'source_sha' => P73_SOURCE_SHA]),
+            json_encode(['release' => FIXTURE_RELEASE, 'source_sha' => FIXTURE_SOURCE_SHA]),
         );
         unlink($scratch.'/target/current');
         symlink($scratch.'/rogue-release', $scratch.'/target/current');
@@ -1218,17 +1218,17 @@ it('refuses to resume when current is malformed or resolves outside the releases
         expect($result['output'])->toContain('carries no usable release/source_sha');
         expect(restoreTargetMaintenanceActive($scratch))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('does not resume a target whose health check fails, and holds it instead', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1237,7 +1237,7 @@ it('does not resume a target whose health check fails, and holds it instead', fu
         $result = restoreTargetRun(
             $scratch,
             ['--resume', '--target', 'parity-target', '--operation', $operation],
-            ['P73_HEALTH_CHECK_EXIT' => '1'],
+            ['RGTEST_HEALTH_CHECK_EXIT' => '1'],
         );
 
         expect($result['exit'])->not->toBe(0);
@@ -1254,14 +1254,14 @@ it('does not resume a target whose health check fails, and holds it instead', fu
 
         expect(restoreTargetHistory($scratch)[1])->toMatchArray(['status' => 'failed-held']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 // =============================================================================
 // Supervisor status observation
 //
-// Real behaviour observed on staging during the first live Phase 7.3 restore:
+// Real behaviour observed on staging during the first live Restore Target Data restore:
 // `supervisorctl status <group>:*` returns EXIT CODE 3 while correctly printing
 // the process as STOPPED. Treating every non-zero exit as "cannot observe"
 // made the quiesce wait out its whole budget and abort the restore, even though
@@ -1287,7 +1287,7 @@ function restoreTargetSupervisorLog(string $scratch): array
 }
 
 it('accepts a STOPPED group reported with exit code 3, and does not wait out the budget', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1312,7 +1312,7 @@ it('accepts a STOPPED group reported with exit code 3, and does not wait out the
         // a correctly stopped queue was being read as unobservable.
         expect($result['output'])->toContain('restore completed and the target is serving again');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1322,11 +1322,11 @@ it('classifies every state the observation can legitimately report', function (
     bool $running,
     bool $fullyStopped,
 ) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
-        [$registryPath, $targetsPath] = p73Registry($scratch);
+        [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
         file_put_contents($scratch.'/supervisor-state', $first."\n");
 
@@ -1334,9 +1334,9 @@ it('classifies every state the observation can legitimately report', function (
             file_put_contents($scratch.'/supervisor-second-state', $second."\n");
         }
 
-        [$exit, $output] = p73RunHarness(
+        [$exit, $output] = runInfraHarness(
             $scratch,
-            p73PatchedScript($scratch, 'restore-target'),
+            patchedInfraScript($scratch, 'restore-target'),
             <<<'BASH'
                 SUPERVISOR_PROGRAM=parity-queue
 
@@ -1349,9 +1349,9 @@ it('classifies every state the observation can legitimately report', function (
                 queue_program_running && echo "RUNNING: yes" || echo "RUNNING: no"
                 queue_program_fully_stopped && echo "STOPPED: yes" || echo "STOPPED: no"
                 BASH,
-            p73BaseEnv($scratch, $registryPath, $targetsPath, array_merge(
-                p73PostgresEnv($scratch),
-                p73RuntimeEnv($scratch),
+            infraScriptEnv($scratch, $registryPath, $targetsPath, array_merge(
+                fakePostgresEnv($scratch),
+                targetRuntimeEnv($scratch),
             )),
         );
 
@@ -1360,7 +1360,7 @@ it('classifies every state the observation can legitimately report', function (
         expect($output)->toContain('RUNNING: '.($running ? 'yes' : 'no'));
         expect($output)->toContain('STOPPED: '.($fullyStopped ? 'yes' : 'no'));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     // A: rc 0, RUNNING -> valid, fully running.
@@ -1388,15 +1388,15 @@ it('fails the observation closed on anything that is not a real answer about thi
     array $environment,
     string $expected,
 ) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
-        [$registryPath, $targetsPath] = p73Registry($scratch);
+        [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-        [$exit, $output] = p73RunHarness(
+        [$exit, $output] = runInfraHarness(
             $scratch,
-            p73PatchedScript($scratch, 'restore-target'),
+            patchedInfraScript($scratch, 'restore-target'),
             <<<'BASH'
                 SUPERVISOR_PROGRAM=parity-queue
 
@@ -1411,9 +1411,9 @@ it('fails the observation closed on anything that is not a real answer about thi
                 queue_program_running && echo "RUNNING: yes" || echo "RUNNING: no"
                 queue_program_fully_stopped && echo "STOPPED: yes" || echo "STOPPED: no"
                 BASH,
-            p73BaseEnv($scratch, $registryPath, $targetsPath, array_merge(
-                p73PostgresEnv($scratch),
-                p73RuntimeEnv($scratch),
+            infraScriptEnv($scratch, $registryPath, $targetsPath, array_merge(
+                fakePostgresEnv($scratch),
+                targetRuntimeEnv($scratch),
                 $environment,
             )),
         );
@@ -1424,51 +1424,51 @@ it('fails the observation closed on anything that is not a real answer about thi
         expect($output)->toContain('RUNNING: no');
         expect($output)->toContain('STOPPED: no');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     // E: nothing printed at all.
     'empty output' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => ' ', 'P73_SUPERVISOR_STATUS_RC' => '0'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => ' ', 'RGTEST_SUPERVISOR_STATUS_RC' => '0'],
         'printed nothing',
     ],
     // F: the group is not registered — Supervisor's own wording and code.
     'no such group' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => 'parity-queue: ERROR (no such group)', 'P73_SUPERVISOR_STATUS_RC' => '4'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => 'parity-queue: ERROR (no such group)', 'RGTEST_SUPERVISOR_STATUS_RC' => '4'],
         'supervisorctl status exited 4',
     ],
     // …and rejected on its output even if the code were acceptable.
     'no such group with an acceptable exit code' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => 'parity-queue: ERROR (no such group)', 'P73_SUPERVISOR_STATUS_RC' => '0'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => 'parity-queue: ERROR (no such group)', 'RGTEST_SUPERVISOR_STATUS_RC' => '0'],
         'is not a Supervisor process state',
     ],
     // G: transport failure.
     'connection refused' => [
-        ['P73_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock refused connection'],
+        ['RGTEST_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock refused connection'],
         'supervisorctl status exited 4',
     ],
     'supervisord not running' => [
-        ['P73_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock no such file', 'P73_SUPERVISOR_STATUS_FAILURE_RC' => '7'],
+        ['RGTEST_SUPERVISOR_STATUS_FAILURE' => 'unix:///var/run/supervisor.sock no such file', 'RGTEST_SUPERVISOR_STATUS_FAILURE_RC' => '7'],
         'supervisorctl status exited 7',
     ],
     // H: somebody else's program.
     'another program' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => 'other-queue:other-queue_00       RUNNING   pid 1, uptime 0:00:01', 'P73_SUPERVISOR_STATUS_RC' => '0'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => 'other-queue:other-queue_00       RUNNING   pid 1, uptime 0:00:01', 'RGTEST_SUPERVISOR_STATUS_RC' => '0'],
         'is not part of parity-queue',
     ],
     // I: a state token Supervisor does not have.
     'unrecognized state' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => 'parity-queue:parity-queue_00     WOBBLING  pid 1', 'P73_SUPERVISOR_STATUS_RC' => '0'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => 'parity-queue:parity-queue_00     WOBBLING  pid 1', 'RGTEST_SUPERVISOR_STATUS_RC' => '0'],
         'is not a Supervisor process state',
     ],
     'truncated line' => [
-        ['P73_SUPERVISOR_STATUS_STDOUT' => 'parity-queue:parity-queue_00', 'P73_SUPERVISOR_STATUS_RC' => '0'],
+        ['RGTEST_SUPERVISOR_STATUS_STDOUT' => 'parity-queue:parity-queue_00', 'RGTEST_SUPERVISOR_STATUS_RC' => '0'],
         'is not a Supervisor process state',
     ],
 ]);
 
 it('leaves live data untouched when the queue cannot be quiesced', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1477,7 +1477,7 @@ it('leaves live data untouched when the queue cannot be quiesced', function () {
         // STOPPED, so the confirmation never comes. What matters is WHERE the
         // restore gives up — before the emergency backup, the restore guard and
         // both activations.
-        $result = restoreTargetApply($scratch, ['P73_SUPERVISOR_STOP_STATE' => 'FATAL']);
+        $result = restoreTargetApply($scratch, ['RGTEST_SUPERVISOR_STOP_STATE' => 'FATAL']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('did not reach STOPPED within the wait budget');
@@ -1488,11 +1488,11 @@ it('leaves live data untouched when the queue cannot be quiesced', function () {
         expect($result['output'])->not->toContain('step: activate storage');
 
         // Live data exactly as it was, and no guard left behind.
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
         expect(is_file(restoreGuardFile($scratch)))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1502,12 +1502,12 @@ it('leaves live data untouched when the queue cannot be quiesced', function () {
 // =============================================================================
 
 it('interrupts and proves the absence of a scheduler that cron started after the resume', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1524,7 +1524,7 @@ it('interrupts and proves the absence of a scheduler that cron started after the
         $result = restoreTargetRun(
             $scratch,
             ['--resume', '--target', 'parity-target', '--operation', $operation],
-            ['P73_HEALTH_CHECK_EXIT' => '1', 'P73_PGREP_EXIT' => '0'],
+            ['RGTEST_HEALTH_CHECK_EXIT' => '1', 'RGTEST_PGREP_EXIT' => '0'],
         );
 
         expect($result['exit'])->not->toBe(0);
@@ -1552,17 +1552,17 @@ it('interrupts and proves the absence of a scheduler that cron started after the
         // else, so the hold marker stays and backups stay refused.
         expect(is_file($scratch.'/run/restores/parity-target/restore-guard'))->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('reports a clean hold when no scheduler process remains', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1573,14 +1573,14 @@ it('reports a clean hold when no scheduler process remains', function () {
         $result = restoreTargetRun(
             $scratch,
             ['--resume', '--target', 'parity-target', '--operation', $operation],
-            ['P73_HEALTH_CHECK_EXIT' => '1'],
+            ['RGTEST_HEALTH_CHECK_EXIT' => '1'],
         );
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('no scheduler process is running against this target');
         expect($result['output'])->not->toContain('WARNING: one or more writers could NOT be proven stopped');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1597,7 +1597,7 @@ function restoreGuardFile(string $scratch): string
 
 /**
  * Runs the REAL backup script against the same scratch host, patched only for
- * root exactly like every other Phase 7.3 subject.
+ * root exactly like every other Restore Target Data subject.
  *
  * The assertions below are about the restore-hold guard, not about the backup
  * pipeline: `backup` is refused before it creates anything, or it gets past the
@@ -1608,12 +1608,12 @@ function restoreGuardFile(string $scratch): string
  */
 function restoreHoldRunBackup(string $scratch): array
 {
-    [$registryPath, $targetsPath] = p73Registry($scratch);
+    [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
-    [$exit, $output] = p73Run(
-        p73PatchedScript($scratch, 'backup'),
+    [$exit, $output] = runInfraScript(
+        patchedInfraScript($scratch, 'backup'),
         ['--target', 'parity-target'],
-        p73BaseEnv($scratch, $registryPath, $targetsPath, p73PostgresEnv($scratch)),
+        infraScriptEnv($scratch, $registryPath, $targetsPath, fakePostgresEnv($scratch)),
     );
 
     return [
@@ -1625,7 +1625,7 @@ function restoreHoldRunBackup(string $scratch): array
 }
 
 it('writes the guard before the first live mutation, as a prerequisite of it', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1643,12 +1643,12 @@ it('writes the guard before the first live mutation, as a prerequisite of it', f
             ->toBeLessThan(mb_strpos($steps, 'step: activate database'));
         expect($steps)->toContain('status=in-progress');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('survives an unhandled kill mid-activation, which is the window a trap cannot cover', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1658,12 +1658,12 @@ it('survives an unhandled kill mid-activation, which is the window a trap cannot
         // by this operation — is free to run against half-restored data. The
         // storage activation kills its own parent to reproduce exactly that.
         $killer = $scratch.'/bin/restore-storage-killer';
-        p73WriteExecutable($killer, <<<'BASH'
+        writeExecutable($killer, <<<'BASH'
             #!/bin/bash
             case "$*" in
                 *--activate*) kill -9 "${PPID}"; sleep 5 ;;
             esac
-            exec "${P73_REAL_RESTORE_STORAGE}" "$@"
+            exec "${RGTEST_REAL_RESTORE_STORAGE}" "$@"
             BASH);
 
         $result = restoreTargetRun(
@@ -1671,7 +1671,7 @@ it('survives an unhandled kill mid-activation, which is the window a trap cannot
             ['--apply', '--target', 'parity-target', '--source', 'local', '--backup', '20260115-120000'],
             [
                 'RATEGURU_RESTORE_STORAGE_BIN' => $killer,
-                'P73_REAL_RESTORE_STORAGE' => p73PatchedScript($scratch, 'restore-storage'),
+                'RGTEST_REAL_RESTORE_STORAGE' => patchedInfraScript($scratch, 'restore-storage'),
             ],
         );
 
@@ -1692,7 +1692,7 @@ it('survives an unhandled kill mid-activation, which is the window a trap cannot
         expect($backup['blocked'])->toBeTrue();
         expect($backup['reached_backup'])->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1700,11 +1700,11 @@ it('refuses to mutate live data when the guard cannot be written', function () {
     // Two halves, because a filesystem this process owns cannot be made
     // genuinely unwritable to it: the writer reports failure, and the call site
     // turns that failure into a refusal.
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
-        [$registryPath, $targetsPath] = p73Registry($scratch);
+        [$registryPath, $targetsPath] = parityRegistryFixture($scratch);
 
         // A run root whose `restores` component is a regular file: `install -d`
         // cannot create the guard's directory, whoever owns it.
@@ -1712,9 +1712,9 @@ it('refuses to mutate live data when the guard cannot be written', function () {
         mkdir($brokenRoot, 0o700, true);
         file_put_contents($brokenRoot.'/restores', "not a directory\n");
 
-        [$exit, $output] = p73RunHarness(
+        [$exit, $output] = runInfraHarness(
             $scratch,
-            p73PatchedScript($scratch, 'restore-target'),
+            patchedInfraScript($scratch, 'restore-target'),
             <<<'BASH'
                 TARGET_ID=parity-target
                 OPERATION_ID=20260115-024512-3f9ac1
@@ -1729,7 +1729,7 @@ it('refuses to mutate live data when the guard cannot be written', function () {
                 echo "WRITER REPORTED FAILURE"
                 echo "guard written flag: ${RESTORE_GUARD_WRITTEN}"
                 BASH,
-            p73BaseEnv($scratch, $registryPath, $targetsPath, ['RATEGURU_RUN_ROOT' => $brokenRoot]),
+            infraScriptEnv($scratch, $registryPath, $targetsPath, ['RATEGURU_RUN_ROOT' => $brokenRoot]),
         );
 
         expect($exit)->toBe(0, $output);
@@ -1747,12 +1747,12 @@ it('refuses to mutate live data when the guard cannot be written', function () {
         expect(mb_strpos($source, 'write_restore_guard in-progress'))
             ->toBeLessThan(mb_strpos($source, 'MUTATION_STAGE=activating'));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('clears the guard when an aligned restore comes up healthy', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1767,17 +1767,17 @@ it('clears the guard when an aligned restore comes up healthy', function () {
         expect($backup['blocked'])->toBeFalse();
         expect($backup['reached_backup'])->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses an ordinary backup while the target is held, and says which commit it is waiting for', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1789,7 +1789,7 @@ it('refuses an ordinary backup while the target is held, and says which commit i
         expect($marker)->toMatchArray([
             'operation' => $operation,
             'target' => 'parity-target',
-            'required_source_sha' => P73_SOURCE_SHA,
+            'required_source_sha' => FIXTURE_SOURCE_SHA,
             'status' => 'held',
         ]);
 
@@ -1806,7 +1806,7 @@ it('refuses an ordinary backup while the target is held, and says which commit i
 
         expect($backup['exit'])->not->toBe(0);
         expect($backup['blocked'])->toBeTrue();
-        expect($backup['output'])->toContain(P73_SOURCE_SHA);
+        expect($backup['output'])->toContain(FIXTURE_SOURCE_SHA);
         expect($backup['output'])->toContain('would record the wrong source_sha');
 
         // Refused before anything was created: it never reached its first real
@@ -1817,17 +1817,17 @@ it('refuses an ordinary backup while the target is held, and says which commit i
         expect(array_values(array_diff(scandir($namespace), ['.', '..'])))
             ->toBe(['20260115-120000', '20260116-090000']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('clears the hold marker only once a resume has proven the data and the code agree', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1853,19 +1853,19 @@ it('clears the hold marker only once a resume has proven the data and the code a
         // And ordinary backups are no longer refused.
         expect(restoreHoldRunBackup($scratch)['blocked'])->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('writes a hold marker when a failure leaves replaced data behind, and none when nothing was touched', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
 
         // Failed before any live mutation: the data still matches the code, so
         // blocking backups would strand the target for no reason.
-        $result = restoreTargetApply($scratch, ['P73_BACKUP_EXIT' => '1']);
+        $result = restoreTargetApply($scratch, ['RGTEST_BACKUP_EXIT' => '1']);
 
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('emergency pre-restore backup failed');
@@ -1879,17 +1879,17 @@ it('writes a hold marker when a failure leaves replaced data behind, and none wh
         expect($backup['blocked'])->toBeFalse();
         expect($backup['reached_backup'])->toBeTrue();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to start a second restore on a target that is already held', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -1904,7 +1904,7 @@ it('refuses to start a second restore on a target that is already held', functio
         expect($second['output'])->toContain('is held after restore operation '.$operation);
         expect($second['output'])->not->toContain('stage backup');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -1913,7 +1913,7 @@ it('refuses to start a second restore on a target that is already held', functio
 // =============================================================================
 
 it('serializes against another restore for the same backup namespace', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1941,12 +1941,12 @@ it('serializes against another restore for the same backup namespace', function 
             proc_close($holder);
         }
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('serializes against a deploy, rollback or cleanup through the existing target deployment lock', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -1976,7 +1976,7 @@ it('serializes against a deploy, rollback or cleanup through the existing target
             proc_close($holder);
         }
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 
     // It is the EXISTING lock, not a new incompatible one.
@@ -1985,7 +1985,7 @@ it('serializes against a deploy, rollback or cleanup through the existing target
 });
 
 it('rejects a planned target before creating a workspace, quiescing anything or downloading a backup', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -2002,12 +2002,12 @@ it('rejects a planned target before creating a workspace, quiescing anything or 
         expect(File::get($scratch.'/php.log'))->toBe('');
         expect(File::get($scratch.'/backup.log'))->toBe('');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses to restore a target with no deployed release', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -2019,16 +2019,16 @@ it('refuses to restore a target with no deployed release', function () {
         expect($result['output'])->toContain('a live data restore requires a deployed target');
         expect(is_dir($scratch.'/run/restores'))->toBeFalse();
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('refuses a backup that cannot identify the code its data belongs to', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'backup' => ['release_json' => "{}\n", 'manifest' => p73Manifest(['release' => 'unknown'])],
+            'backup' => ['release_json' => "{}\n", 'manifest' => backupManifestFixture(['release' => 'unknown'])],
         ]);
 
         $result = restoreTargetApply($scratch);
@@ -2039,9 +2039,9 @@ it('refuses a backup that cannot identify the code its data belongs to', functio
         // Nothing was quiesced and nothing live was touched.
         expect(restoreTargetMaintenanceActive($scratch))->toBeFalse();
         expect(is_file(restoreTargetStorage($scratch).'/app/live-marker.txt'))->toBeTrue();
-        expect(p73Databases($scratch))->toBe(['parity_db']);
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -2137,7 +2137,7 @@ it('requires root for a real invocation', function () {
 });
 
 // =============================================================================
-// Phase 7.4: the machine-readable result contract
+// the controlled code alignment: the machine-readable result contract
 // =============================================================================
 //
 // The human summary above is for operators and stays exactly as it was. This
@@ -2217,7 +2217,7 @@ function restoreTargetHeldSnapshot(string $scratch, string $operation): array
         'queue' => restoreTargetQueueState($scratch),
         'scheduler' => restoreTargetSchedulerPresent($scratch),
         'current' => readlink($scratch.'/target/current'),
-        'databases' => p73Databases($scratch),
+        'databases' => fakePostgresDatabases($scratch),
         'guard' => File::get(restoreGuardFile($scratch)),
         'state' => File::get(restoreTargetStatePath($scratch, $operation)),
         'storage' => is_file(restoreTargetStorage($scratch).'/app/restored-marker.txt'),
@@ -2227,7 +2227,7 @@ function restoreTargetHeldSnapshot(string $scratch, string $operation): array
 }
 
 it('prints exactly one machine-readable result for an aligned restore', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -2237,13 +2237,13 @@ it('prints exactly one machine-readable result for an aligned restore', function
 
         expect(restoreTargetResult($result['output']))->toBe([
             'status' => 'completed',
-            'operation_id' => p73OperationIds($result['output'])[0],
+            'operation_id' => operationIdsIn($result['output'])[0],
             'target' => 'parity-target',
             'backup' => '20260115-120000',
-            'backup_release' => P73_RELEASE,
-            'backup_source_sha' => P73_SOURCE_SHA,
-            'required_source_sha' => P73_SOURCE_SHA,
-            'current_source_sha' => P73_SOURCE_SHA,
+            'backup_release' => FIXTURE_RELEASE,
+            'backup_source_sha' => FIXTURE_SOURCE_SHA,
+            'required_source_sha' => FIXTURE_SOURCE_SHA,
+            'current_source_sha' => FIXTURE_SOURCE_SHA,
             'code_alignment' => 'ALIGNED',
             'runtime_resumed' => 'yes',
         ]);
@@ -2253,17 +2253,17 @@ it('prints exactly one machine-readable result for an aligned restore', function
         expect(mb_strpos($result['output'], 'RESTORE DATA COMPLETE: YES'))
             ->toBeLessThan(mb_strpos($result['output'], 'RATEGURU_RESTORE_RESULT='));
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('prints exactly one machine-readable result for a held restore, naming the commit it needs', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $result = restoreTargetApply($scratch);
@@ -2271,28 +2271,28 @@ it('prints exactly one machine-readable result for a held restore, naming the co
 
         expect(restoreTargetResult($result['output']))->toBe([
             'status' => 'held',
-            'operation_id' => p73OperationIds($result['output'])[0],
+            'operation_id' => operationIdsIn($result['output'])[0],
             'target' => 'parity-target',
             'backup' => '20260115-120000',
-            'backup_release' => P73_RELEASE,
-            'backup_source_sha' => P73_SOURCE_SHA,
-            'required_source_sha' => P73_SOURCE_SHA,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'backup_release' => FIXTURE_RELEASE,
+            'backup_source_sha' => FIXTURE_SOURCE_SHA,
+            'required_source_sha' => FIXTURE_SOURCE_SHA,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
             'code_alignment' => 'REQUIRED',
             'runtime_resumed' => 'no',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('prints exactly one machine-readable result for a resume', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -2306,25 +2306,25 @@ it('prints exactly one machine-readable result for a resume', function () {
             'operation_id' => $operation,
             'target' => 'parity-target',
             'backup' => '20260115-120000',
-            'backup_release' => P73_RELEASE,
-            'backup_source_sha' => P73_SOURCE_SHA,
-            'required_source_sha' => P73_SOURCE_SHA,
-            'current_source_sha' => P73_SOURCE_SHA,
+            'backup_release' => FIXTURE_RELEASE,
+            'backup_source_sha' => FIXTURE_SOURCE_SHA,
+            'required_source_sha' => FIXTURE_SOURCE_SHA,
+            'current_source_sha' => FIXTURE_SOURCE_SHA,
             'code_alignment' => 'ALIGNED',
             'runtime_resumed' => 'yes',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('never puts a secret in the machine-readable result', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $result = restoreTargetApply($scratch);
@@ -2344,21 +2344,21 @@ it('never puts a secret in the machine-readable result', function () {
             'code_alignment', 'runtime_resumed',
         ]);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 // =============================================================================
-// Phase 7.4: --inspect
+// the controlled code alignment: --inspect
 // =============================================================================
 
 it('reports a held operation and changes absolutely nothing', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -2369,8 +2369,8 @@ it('reports a held operation and changes absolutely nothing', function () {
         expect($result['exit'])->toBe(0, $result['output']);
         expect($result['output'])
             ->toContain('STATUS: HELD')
-            ->toContain('REQUIRED SOURCE SHA: '.P73_SOURCE_SHA)
-            ->toContain('CURRENT SOURCE SHA: '.P73_OTHER_SOURCE_SHA)
+            ->toContain('REQUIRED SOURCE SHA: '.FIXTURE_SOURCE_SHA)
+            ->toContain('CURRENT SOURCE SHA: '.FIXTURE_OTHER_SOURCE_SHA)
             ->toContain('nothing was changed');
 
         expect(restoreTargetResult($result['output']))->toBe([
@@ -2378,10 +2378,10 @@ it('reports a held operation and changes absolutely nothing', function () {
             'operation_id' => $operation,
             'target' => 'parity-target',
             'backup' => '20260115-120000',
-            'backup_release' => P73_RELEASE,
-            'backup_source_sha' => P73_SOURCE_SHA,
-            'required_source_sha' => P73_SOURCE_SHA,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'backup_release' => FIXTURE_RELEASE,
+            'backup_source_sha' => FIXTURE_SOURCE_SHA,
+            'required_source_sha' => FIXTURE_SOURCE_SHA,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
             'code_alignment' => 'REQUIRED',
             'runtime_resumed' => 'no',
         ]);
@@ -2394,17 +2394,17 @@ it('reports a held operation and changes absolutely nothing', function () {
         expect(File::get($scratch.'/php.log'))->not->toContain('artisan up');
         expect(File::get($scratch.'/supervisor.log'))->not->toContain('start');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('inspects the same operation repeatedly without ever resuming it', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -2420,12 +2420,12 @@ it('inspects the same operation repeatedly without ever resuming it', function (
         expect(is_file(restoreGuardFile($scratch)))->toBeTrue();
         expect(restoreTargetHistory($scratch))->toHaveCount(1);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
 it('takes no backup and no source, and requires an operation', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -2448,7 +2448,7 @@ it('takes no backup and no source, and requires an operation', function () {
         expect($withSource['exit'])->not->toBe(0);
         expect($withSource['output'])->toContain('--source is only valid with --apply');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });
 
@@ -2456,12 +2456,12 @@ it('refuses to inspect an operation that is not this target own held code alignm
     string $case,
     string $expected,
 ) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -2494,7 +2494,7 @@ it('refuses to inspect an operation that is not this target own held code alignm
                 break;
 
             case 'guard-and-state-disagree-about-the-commit':
-                restoreTargetPatchGuard($scratch, ['required_source_sha' => P73_OTHER_SOURCE_SHA]);
+                restoreTargetPatchGuard($scratch, ['required_source_sha' => FIXTURE_OTHER_SOURCE_SHA]);
                 break;
 
             case 'abbreviated-required-commit':
@@ -2539,10 +2539,10 @@ it('refuses to inspect an operation that is not this target own held code alignm
         expect(restoreTargetQueueState($scratch))->toBe($before['queue']);
         expect(restoreTargetSchedulerPresent($scratch))->toBe($before['scheduler']);
         expect(readlink($scratch.'/target/current'))->toBe($before['current']);
-        expect(p73Databases($scratch))->toBe($before['databases']);
+        expect(fakePostgresDatabases($scratch))->toBe($before['databases']);
         expect(restoreTargetHistory($scratch))->toBe($before['history']);
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     ['unknown-operation', 'is held by restore operation'],
@@ -2569,12 +2569,12 @@ it('refuses to report a target as held once the hold itself is gone', function (
     array $env,
     string $expected,
 ) {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch, [
-            'current_release' => P73_OTHER_RELEASE,
-            'current_source_sha' => P73_OTHER_SOURCE_SHA,
+            'current_release' => FIXTURE_OTHER_RELEASE,
+            'current_source_sha' => FIXTURE_OTHER_SOURCE_SHA,
         ]);
 
         $operation = restoreTargetHeldOperation($scratch);
@@ -2608,18 +2608,18 @@ it('refuses to report a target as held once the hold itself is gone', function (
         expect($result['output'])->toContain($expected);
         expect($result['output'])->not->toContain('RATEGURU_RESTORE_RESULT=');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 })->with([
     ['maintenance-off', [], 'is NOT in maintenance mode'],
     ['queue-running', [], 'is not fully STOPPED'],
     ['queue-partly-running', [], 'is not fully STOPPED'],
     ['scheduler-present', [], 'a scheduled writer can fire against this target'],
-    ['observation-fails', ['P73_SUPERVISOR_STATUS_FAILURE' => 'supervisord is unreachable'], 'cannot observe the target queue program'],
+    ['observation-fails', ['RGTEST_SUPERVISOR_STATUS_FAILURE' => 'supervisord is unreachable'], 'cannot observe the target queue program'],
 ]);
 
 it('refuses to inspect a planned target before reading anything', function () {
-    $scratch = p73Scratch();
+    $scratch = restoreScratchDir();
 
     try {
         restoreTargetFixture($scratch);
@@ -2631,6 +2631,6 @@ it('refuses to inspect a planned target before reading anything', function () {
         expect($result['exit'])->not->toBe(0);
         expect($result['output'])->toContain('lifecycle=planned');
     } finally {
-        p73Cleanup($scratch);
+        removeScratchDir($scratch);
     }
 });

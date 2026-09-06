@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# record-nightwatch-deployment — Phase 7.2A: record ONE successful RateGuru
+# record-nightwatch-deployment — the deployment observability work: record ONE successful RateGuru
 # deployment state transition in Laravel Nightwatch, for ONE target.
 #
 # Why this exists on the server at all. Nightwatch's supported deployment
@@ -40,7 +40,7 @@
 # because Nightwatch was unreachable.
 #
 # Installed by install-nightwatch-agent (never by install-target-operations):
-# Nightwatch is a time-boxed Phase 6B/6C evaluation, so its files stay
+# Nightwatch is a time-boxed the Nightwatch evaluation/6C evaluation, so its files stay
 # reversible in one place through that installer's --remove, and no host is
 # ever required to carry them.
 

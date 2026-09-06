@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 6B: the Supervisor-managed Nightwatch agent, its committed program
+ * the Nightwatch evaluation: the Supervisor-managed Nightwatch agent, its committed program
  * file, its installer and the deploy transition that keeps it following
  * `current`.
  *
@@ -46,7 +46,7 @@ function nightwatchScratch(): string
     foreach ([
         '/bin',
         '/fs/etc/supervisor/conf.d',
-        // Phase 7.2A: the installer also owns the deployment-marker primitive,
+        // the deployment observability work: the installer also owns the deployment-marker primitive,
         // its sudo wrapper and its sudoers grant. Their destination directories
         // are created by host bootstrap on a real host.
         '/fs/etc/sudoers.d',
@@ -64,7 +64,7 @@ function nightwatchScratch(): string
 /**
  * A deployed staging target under the scratch filesystem root: a real
  * `current` symlink into a release directory, a shared .env and the service
- * log directory Phase 5.4 owns.
+ * log directory the service bootstrap owns.
  *
  * @param  array<string, string>  $env  NIGHTWATCH_* keys for shared/.env
  */
@@ -402,7 +402,7 @@ it('names a Nightwatch program for staging-main and for no other target', functi
 
 it('leaves every planned production target untouched by the evaluation', function () {
     // No token key, no agent program, no registry field — the production
-    // template and the production targets are exactly as Phase 6A left them.
+    // template and the production targets are exactly as the Sentry integration left them.
     $production = File::get(base_path('infrastructure/templates/environment/production.env.example'));
     expect($production)->not->toContain('NIGHTWATCH');
 
@@ -614,7 +614,7 @@ it('refuses to install without a token, an enabled flag, or a deployed release',
         if ($deployed) {
             nightwatchDeployedTarget($scratch, $env);
         } else {
-            // Phase 5.4 owns the log directory; the agent's working directory
+            // the service bootstrap owns the log directory; the agent's working directory
             // is `current`, which does not exist before the first deployment.
             @mkdir($scratch.'/fs'.nightwatchRegistryTarget()['application_root'].'/shared/storage/logs', 0o755, true);
         }
@@ -647,8 +647,8 @@ it('verifies an installed agent, and fails when its ownership has drifted', func
         expect($exit)->toBe(0, $output);
         expect($output)->toContain('PASS: Nightwatch agent and deployment-marker primitive verified');
 
-        // Phase 7.2A: the marker primitive, its wrapper and its sudoers grant
-        // are installed and verified alongside the agent, so a Phase 6C
+        // the deployment observability work: the marker primitive, its wrapper and its sudoers grant
+        // are installed and verified alongside the agent, so the Nightwatch decision
         // rejection can remove the whole integration in one step.
         foreach ([
             '/fs/home/www/rateguru/bin/record-nightwatch-deployment',
@@ -760,7 +760,7 @@ it('removes the agent and proves the ingest port is closed', function () {
         expect(is_file($installed))->toBeFalse('the Supervisor program was not uninstalled');
         expect(nightwatchStubLog($scratch, 'supervisorctl'))->toContain('supervisorctl stop '.nightwatchProgramName().':*');
 
-        // Phase 7.2A: the whole integration goes, sudo grant included. A grant
+        // the deployment observability work: the whole integration goes, sudo grant included. A grant
         // left behind would point the deploy user at a wrapper that no longer
         // exists.
         foreach ([
@@ -915,7 +915,7 @@ it('warns but never fails the deployment when the agent will not come back', fun
 it('runs the agent transition after the queue transition and before the success record', function () {
     $source = File::get(base_path('infrastructure/scripts/deploy'));
 
-    // Measured inside perform_deploy, not across the file. Since Phase 7.4,
+    // Measured inside perform_deploy, not across the file. Since the controlled code alignment,
     // finalize_restore_alignment — defined ABOVE perform_deploy — also calls
     // perform_nightwatch_transition, so a whole-file position comparison
     // would be about declaration order rather than about the normal
@@ -940,7 +940,7 @@ it('runs the agent transition after the queue transition and before the success 
     expect($agent)->toBeLessThan($success);
 
     // And the block is delimited, so it can be extracted and removed cleanly
-    // if Phase 6C rejects Nightwatch. Matched against the whole file: the
+    // if the Nightwatch decision rejects Nightwatch. Matched against the whole file: the
     // definition lives outside perform_deploy.
     expect(preg_match(
         '/# --- nightwatch agent transition \(begin\) ---\n(.*?)\n# --- nightwatch agent transition \(end\) ---/s',

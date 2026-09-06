@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 7.3: target-aware backup-cycle orchestration.
+ * : target-aware backup-cycle orchestration.
  *
  * These tests execute the real shipped `infrastructure/scripts/backup-cycle`
  * — never a reimplementation of its logic — driving five stub child

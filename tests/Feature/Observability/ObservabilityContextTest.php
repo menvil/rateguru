@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 /**
- * Phase 6B: the correlation metadata, and the one carrier it travels on.
+ * the Nightwatch evaluation: the correlation metadata, and the one carrier it travels on.
  *
  * Laravel's Context is the framework's own correlation channel: Monolog writes
  * it into every log record's `extra`, the queue dehydrates it into a job
@@ -61,7 +61,7 @@ it('honours an inbound request ID rather than minting a second one', function ()
 it('carries the deployment identity and the request ID across the queue boundary', function () {
     // Verified, not assumed: this is the mechanism Nightwatch relies on to
     // attach a job to the request that dispatched it, and RateGuru had no
-    // Context at all before Phase 6B.
+    // Context at all before the Nightwatch evaluation.
     $this->withHeaders(['X-Request-Id' => 'crosses-the-queue'])->get('/')->assertSuccessful();
 
     Queue::connection('database')->push(new GenerateMediaVariantsJob(1));

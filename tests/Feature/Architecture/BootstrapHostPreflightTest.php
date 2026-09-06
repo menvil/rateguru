@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 5 slice 5.1: infrastructure/scripts/bootstrap-host-preflight — the
+ * : infrastructure/scripts/bootstrap-host-preflight — the
  * strictly read-only clean-VPS host contract inspection.
  *
  * Every test below executes the real, shipped script as a subprocess —
@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\File;
  *
  * The two profiles that matter most mirror the two real situations the
  * preflight must serve: a clean VPS (everything missing — the report tells
- * Phase 5 what to build) and the current staging host (everything present —
+ * the clean-host bootstrap what to build) and the current staging host (everything present —
  * recognized as PASS, never misreported as a conflict).
  */
 
@@ -146,7 +146,7 @@ function bootstrapPreflightCompliantStatTable(): array
         '/home/www/rateguru/config/deployment-targets.json|regular file|root|root|640',
         '/home/www/rateguru/config/deployment.conf|regular file|root|root|640',
         '/home/www/rateguru/bin/common|regular file|root|root|644',
-        // Per-target rows mirror the slice 5.3 structural contract that
+        // Per-target rows mirror the install-bootstrap-host-layout structural contract that
         // install-bootstrap-host-layout converges and the preflight now
         // asserts authoritatively (setgid 2750/2770 modes included).
         '/home/www/rateguru/staging|directory|root|root|755',
@@ -156,7 +156,7 @@ function bootstrapPreflightCompliantStatTable(): array
         '/home/www/rateguru/staging/shared/storage/logs|directory|rateguru-staging|rateguru-staging|2770',
         '/home/www/rateguru/staging/current|symbolic link|root|root|777',
         // The immutable release the compliant current resolves to — the
-        // slice 5.5 target-state classification (PRE_DEPLOY/DEPLOYED/BROKEN)
+        // the queue activation target-state classification (PRE_DEPLOY/DEPLOYED/BROKEN)
         // stats the resolved path to prove the DEPLOYED shape.
         '/home/www/rateguru/staging/releases/20260101120000|directory|deploy-rateguru-staging|rateguru-staging-code|750',
         '/home/www/rateguru/staging/locks|directory|deploy-rateguru-staging|rateguru-staging-code|2750',
@@ -168,7 +168,7 @@ function bootstrapPreflightCompliantStatTable(): array
         '/usr/local/sbin/rateguru-deploy|regular file|root|root|755',
         '/usr/local/sbin/rateguru-rollback|regular file|root|root|755',
         '/usr/local/sbin/rateguru-cleanup|regular file|root|root|755',
-        // Phase 7.4: the restore perimeter is part of what a clean host is
+        // the controlled code alignment: the restore perimeter is part of what a clean host is
         // expected to carry, exactly like the other three wrappers.
         '/usr/local/sbin/rateguru-restore|regular file|root|root|755',
         '/etc/sudoers.d/rateguru-deploy|regular file|root|root|440',
@@ -482,7 +482,7 @@ SH);
 
 /**
  * readlink: consults the readlink-table (path|resolved) for `-f` symlink
- * resolution — the slice 5.5 target-state classification resolves `current`
+ * resolution — the queue activation target-state classification resolves `current`
  * and `releases` through it. An unlisted path fails like GNU readlink -f on
  * an unresolvable path, which is how the "releases directory is missing
  * while current exists" branch is reachable.
@@ -736,7 +736,7 @@ it('recognizes the existing installation as present rather than conflicting', fu
         }
 
         // rclone is recognized as the managed external runtime binary the
-        // slice 5.2 contract pins — dpkg package ownership is deliberately
+        // install-bootstrap-runtime contract pins — dpkg package ownership is deliberately
         // not required (the real staging binary is standalone).
         expect($output)->toContain(sprintf(
             'PASS     tool:rclone — managed external runtime binary present (pinned v%s; dpkg ownership not required)',
@@ -808,9 +808,9 @@ it('keeps --report usable on a clean host: exit 0 plus intended bootstrap action
         expect($exit)->toBe(0, "--report is inventory, never a gate:\n{$output}");
         expect($output)->toContain('HOST BOOTSTRAP READY: NO');
         expect($output)->toContain(
-            '-> bootstrap: install verified rclone v'.bootstrapPreflightRclonePin().' via install-bootstrap-runtime --apply (slice 5.2)',
+            '-> bootstrap: install verified rclone v'.bootstrapPreflightRclonePin().' via install-bootstrap-runtime --apply',
         );
-        expect($output)->toContain('-> bootstrap: create via slice 5.3 (never by preflight)');
+        expect($output)->toContain('-> bootstrap: create via install-bootstrap-host-layout (never by preflight)');
     } finally {
         bootstrapPreflightCleanup($scratch);
     }
@@ -1073,7 +1073,7 @@ it('reports a runtime user missing from the code group as a MISSING membership',
     }
 });
 
-it('asserts the slice 5.3 identity contract for managed target accounts: deploy home/shell and runtime shell', function () {
+it('asserts the install-bootstrap-host-layout identity contract for managed target accounts: deploy home/shell and runtime shell', function () {
     foreach ([
         // [compliant passwd line, drifted passwd line, expected CONFLICT detail]
         [
@@ -1312,7 +1312,7 @@ it('never infers PRE_DEPLOY from an unreadable current: a non-root probe is WARN
     }
 });
 
-it('asserts the slice 5.3 structural contract authoritatively for active-target directories', function () {
+it('asserts the install-bootstrap-host-layout structural contract authoritatively for active-target directories', function () {
     $scratch = bootstrapPreflightScratchDir();
 
     try {
@@ -1343,7 +1343,7 @@ it('asserts the slice 5.3 structural contract authoritatively for active-target 
 });
 
 it('treats an absent current as legitimate PRE_DEPLOY state: DEFERRED, deployment-owned, exit 0 on a bootstrapped host', function () {
-    // The slice 5.5 PRE_DEPLOY contract: a host whose 5.2-5.4 bootstrap is
+    // the queue activation PRE_DEPLOY contract: a host whose bootstrap is
     // complete but which has never received a release is a legitimate,
     // correctly bootstrapped host. The absent current and the deploy-time
     // external material are DEFERRED — never MISSING — and --check exits 0.
@@ -1644,7 +1644,7 @@ it('ignores every RATEGURU_PREFLIGHT_* override unless test overrides are explic
 // two can never disagree.
 // =============================================================================
 
-it('asserts the slice 5.4 service-file modes: a drifted installed mode is CONFLICT, not PASS', function () {
+it('asserts the service-file modes: a drifted installed mode is CONFLICT, not PASS', function () {
     $scratch = bootstrapPreflightScratchDir();
 
     try {
@@ -1739,7 +1739,7 @@ it('reports the public-storage ACL contract: PASS when granted, MISSING when the
     }
 });
 
-it('requires the slice 5.4 service-support log directory with the exact runtime ownership and setgid mode', function () {
+it('requires the service-support log directory with the exact runtime ownership and setgid mode', function () {
     $scratch = bootstrapPreflightScratchDir();
 
     try {
@@ -1753,14 +1753,14 @@ it('requires the slice 5.4 service-support log directory with the exact runtime 
 
         expect($exit)->toBe(1);
         expect($output)->toContain('MISSING  path:/home/www/rateguru/staging/shared/storage/logs');
-        expect($output)->toContain('service-support log directory for staging-main (slice 5.4 contract');
+        expect($output)->toContain('service-support log directory for staging-main (install-bootstrap-services contract');
     } finally {
         bootstrapPreflightCleanup($scratch);
     }
 });
 
 // =============================================================================
-// www-data as a code-group reader (Phase 5.6 clean-VPS blocker #2).
+// www-data as a code-group reader (the clean-VPS blocker #2).
 // =============================================================================
 
 it('reports a missing www-data code-group membership, the exact clean-VPS 404 cause', function () {

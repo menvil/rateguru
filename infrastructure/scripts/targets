@@ -26,7 +26,7 @@ DEPLOYMENT_CONF_FILE="${RATEGURU_DEPLOYMENT_CONF_FILE:-/home/www/rateguru/config
 SCHEMA_VERSION=1
 
 # Only this target may currently be active. Every other target must stay
-# planned or disabled until its slice of Phase 4 lands.
+# planned or disabled until the host that serves it has been provisioned.
 ACTIVE_ALLOWLIST="staging-main"
 
 # Property names anywhere in the registry that would indicate a secret leaked

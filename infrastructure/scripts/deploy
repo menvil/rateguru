@@ -21,7 +21,7 @@ fi
 # shellcheck disable=SC1090
 source "${COMMON_FILE}"
 
-# Phase 4 slice 5: gated test overrides for the two external binaries deploy
+# Gated test overrides for the two external binaries deploy
 # invokes by absolute path, mirroring status's own RATEGURU_HEALTH_CHECK_CLI/
 # HEALTH_CHECK_BIN pattern exactly (unlike PHP_BIN/PHP_FPM_SERVICE, which
 # already come from deployment.conf, these two were previously hardcoded
@@ -37,7 +37,7 @@ VERIFY_REQUIRED_CLIS_BIN_DEFAULT="/home/www/rateguru/bin/verify-required-clis"
 HEALTH_CHECK_BIN="${HEALTH_CHECK_BIN_DEFAULT}"
 VERIFY_REQUIRED_CLIS_BIN="${VERIFY_REQUIRED_CLIS_BIN_DEFAULT}"
 
-# Phase 7.4: the two values the controlled restore alignment path needs, and
+# The two values the controlled restore alignment path needs, and
 # nothing a normal deployment ever reads.
 #
 # RUN_ROOT is where the restore guard and every restore operation's own state
@@ -58,7 +58,7 @@ RESTORE_TARGET_BIN_DEFAULT="/home/www/rateguru/bin/restore-target"
 RUN_ROOT="${RUN_ROOT_DEFAULT}"
 RESTORE_TARGET_BIN="${RESTORE_TARGET_BIN_DEFAULT}"
 
-# Phase 5 slice 5.5: how long the first-deploy Supervisor activation waits
+# How long the first-deploy Supervisor activation waits
 # for the target queue program to reach RUNNING. supervisorctl itself is
 # resolved through PATH — the same way this script already resolves
 # systemctl and runuser, and the same way tests already PATH-shadow both —
@@ -259,7 +259,7 @@ resolve_target() {
     PUBLIC_HOSTNAME="$(target_primary_public_hostname "${TARGET_ID}")"
     INCOMING_ROOT="$(readlink -f "$(target_incoming_artifacts "${TARGET_ID}")")"
     SUPERVISOR_PROGRAM="$(target_supervisor_program "${TARGET_ID}")"
-    # Phase 6B: empty for every target that does not run a Nightwatch agent,
+    # Empty for every target that does not run a Nightwatch agent,
     # which is every target but staging-main. A non-zero return from the
     # allowlist is "no agent here", never an error, so it must not trip set -e.
     NIGHTWATCH_PROGRAM="$(target_nightwatch_program "${TARGET_ID}" || true)"
@@ -267,9 +267,9 @@ resolve_target() {
     HEALTH_CHECK_ARGS=(--target "${TARGET_ID}")
 }
 
-# --- target Supervisor worker (Phase 5 slice 5.5) ----------------------------
+# --- target Supervisor worker ------------------------------------------------
 #
-# Closes the documented Phase 5.4 first-deploy gap: on a PRE_DEPLOY host the
+# Closes the documented the service bootstrap first-deploy gap: on a PRE_DEPLOY host the
 # bootstrap installs the committed Supervisor program config but defers its
 # activation (directory=current does not exist yet), so the first deployment
 # must be the step that makes the target worker RUNNING. The program
@@ -335,7 +335,8 @@ activate_supervisor_worker() {
 
     # reread only parses the installed configuration into supervisord's
     # memory — add/remove/start happens exclusively on update, which is why
-    # slice 5.4 uses reread as its side-effect-free validation. So the
+    # install-bootstrap-services uses reread as its side-effect-free
+    # validation. So the
     # "this deploy may have started the worker" flag is armed after reread
     # and before update: a failed reread genuinely activated nothing, and
     # recovery must not then try to stop a program that was never added.
@@ -447,7 +448,7 @@ perform_queue_transition() {
     fi
 }
 
-# --- target Nightwatch agent (Phase 6B evaluation) ---------------------------
+# --- target Nightwatch agent -------------------------------------------------
 #
 # The Nightwatch agent is a long-running Supervisor process whose
 # `directory=` is the target's `current` symlink. Supervisor resolves that
@@ -533,7 +534,7 @@ perform_nightwatch_transition() {
 }
 # --- nightwatch agent transition (end) ---
 
-# --- controlled restore alignment (Phase 7.4) --------------------------------
+# --- controlled restore alignment --------------------------------------------
 #
 # A target whose data was restored from a backup taken under a DIFFERENT commit
 # than `current` serves is left deliberately held by restore-target: in
@@ -809,7 +810,7 @@ handle_deployment_exit() {
             fi
         fi
 
-        # Supervisor state recovery (slice 5.5): only when THIS deploy
+        # Supervisor state recovery: only when THIS deploy
         # activated the target worker (which only happens when it was not
         # active before the deploy — an already-RUNNING worker is never
         # touched, so there is nothing to recover for it). Stopping the
@@ -1307,7 +1308,7 @@ perform_deploy() {
     # deployment may be called successful.
     perform_queue_transition
 
-    # Phase 6B: the Nightwatch agent follows the queue worker, and only ever
+    # The Nightwatch agent follows the queue worker, and only ever
     # warns. A running observability sidecar that could not be restarted is
     # worth saying out loud; it is not worth undoing a release that has
     # already passed its health check.

@@ -77,7 +77,7 @@ it('separates the environment class from the deployment target', function () {
 });
 
 it('omits the target and commit tags entirely when the metadata is unknown', function () {
-    // A working copy, or a target whose .env predates Phase 6. Nothing may be
+    // A working copy, or a target whose .env predates the observability work. Nothing may be
     // invented to fill the gap — an absent tag is the honest answer.
     bootObservabilityScope(['deployment.target' => null, 'deployment.commit' => null, 'sentry.release' => null]);
 

@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 4 slice 6: target-aware rollback.
+ * the target-aware migration: target-aware rollback.
  *
  * These tests execute the real shipped `infrastructure/scripts/rollback` —
  * never a reimplementation of its logic — with every host dependency
@@ -1429,7 +1429,7 @@ it('ignores RATEGURU_HEALTH_CHECK_BIN without the opt-in flag, and honors it wit
 //
 // A prior version of this file had its own "leaves deploy and workflows
 // untouched" test here, checking infrastructure/scripts/deploy against
-// origin/develop. deploy.sh legitimately changed in Phase 4's legacy
+// origin/develop. deploy.sh legitimately changed in the target-aware migration's legacy
 // --environment removal slice too (see DeployTest.php for its own coverage),
 // leaving that test with a false premise — it was deleted outright rather
 // than left checking a file that now genuinely differs, matching the
@@ -1444,7 +1444,7 @@ it('does not add queue restart to rollback', function () {
 });
 
 // =============================================================================
-// Phase 7.4: the restore interlock
+// the controlled code alignment: the restore interlock
 // =============================================================================
 //
 // A target held after a restore has live data that may belong to a different

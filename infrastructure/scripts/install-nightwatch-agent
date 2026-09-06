@@ -3,30 +3,30 @@
 # install-nightwatch-agent — install, verify or remove the Supervisor-managed
 # Laravel Nightwatch agent for one deployment target.
 #
-# Phase 6B is a time-boxed side-by-side evaluation of Nightwatch against the
+# the Nightwatch evaluation is a time-boxed side-by-side evaluation of Nightwatch against the
 # already-accepted Sentry integration, and this script is deliberately shaped
 # by that:
 #
 #   * It is a standalone installer, not a step inside
-#     install-bootstrap-services. The Phase 5.4 service contract describes what
+#     install-bootstrap-services. The service contract describes what
 #     a RateGuru host must have to serve traffic; a trial APM agent is not part
 #     of that, and wiring it in would make every host --verify fail on a host
 #     that simply has not opted in. Ownership boundary: 5.4 owns the queue
 #     worker, PHP-FPM, Nginx and cron; this owns the Nightwatch integration and
 #     nothing else.
 #
-#   * Phase 7.2A widened "the Nightwatch integration" by exactly three files,
+#   * the deployment observability work widened "the Nightwatch integration" by exactly three files,
 #     and deliberately not by more: the deployment-marker primitive
 #     (record-nightwatch-deployment), the generic sudo wrapper the GitHub
 #     deploy channel invokes it through, and that wrapper's own sudoers
 #     drop-in. They belong here rather than in install-target-operations'
 #     bundle or install-target-perimeter's own generic wrappers for the
 #     same reason the agent does: every one of them is Nightwatch-only, a
-#     Phase 6C rejection has to be able to remove the entire integration in one
+#     the Nightwatch decision rejection has to be able to remove the entire integration in one
 #     step, and no host may be *required* to carry any of it. The accepted 5.4
 #     host contract is therefore untouched.
 #
-#   * --remove exists as a first-class mode, because Phase 6C may reject
+#   * --remove exists as a first-class mode, because the Nightwatch decision may reject
 #     Nightwatch and "undo it" must not be a paragraph of manual supervisorctl
 #     in a runbook. It removes the marker primitive, the wrapper and the
 #     sudoers grant alongside the Supervisor program, so the grant can never
@@ -84,7 +84,7 @@ SERVICE_LOG_SUBPATH="shared/storage/logs"
 
 BACKUP_ROOT="/var/backups/rateguru-nightwatch-agent"
 
-# --- Deployment-marker primitive (Phase 7.2A) -------------------------------
+# --- Deployment-marker primitive ---------------------------------------------
 #
 # The three files that let a successful deploy or rollback record itself in
 # Nightwatch. Destinations are fixed; FS_ROOT (a test seam only) is applied by
@@ -94,7 +94,7 @@ BACKUP_ROOT="/var/backups/rateguru-nightwatch-agent"
 # root-run operational scripts because that is where its sibling `common`
 # lives and where the wrapper resolves it from — but it is emphatically NOT a
 # member of install-target-operations' bundle: that installer neither installs,
-# verifies nor removes it, and its own file set is unchanged by Phase 7.2.
+# Verifies nor removes it, and its own file set is unchanged by Prepare Host.
 DST_RECORD_BIN="/home/www/rateguru/bin/record-nightwatch-deployment"
 DST_MARKER_WRAPPER="/usr/local/sbin/rateguru-nightwatch-deployment"
 DST_MARKER_SUDOERS="/etc/sudoers.d/rateguru-nightwatch-deployment"
@@ -301,7 +301,7 @@ resolve_target() {
     require_active_target "${TARGET_ID}"
 
     if ! NIGHTWATCH_PROGRAM="$(target_nightwatch_program "${TARGET_ID}")"; then
-        fail "target ${TARGET_ID} does not run a Nightwatch agent — Phase 6B is a staging-only evaluation and the allowlist in infrastructure/scripts/common names staging-main alone"
+        fail "target ${TARGET_ID} does not run a Nightwatch agent — the Nightwatch evaluation is a staging-only evaluation and the allowlist in infrastructure/scripts/common names staging-main alone"
     fi
 
     REPO_ROOT="$(resolve_repo_root)"
@@ -438,7 +438,7 @@ validate_deployed() {
         || fail "${CURRENT_LINK} does not resolve to a release directory"
 
     [[ -d "$(physical "${LOG_DIR}")" ]] \
-        || fail "the service log directory is missing: ${LOG_DIR} — it is owned by install-bootstrap-services (Phase 5.4), not by this script"
+        || fail "the service log directory is missing: ${LOG_DIR} — it is owned by install-bootstrap-services, not by this script"
 }
 
 # --- Supervisor ------------------------------------------------------------
@@ -623,7 +623,7 @@ install_conf() {
     fi
 
     [[ -d "$(dirname "${dst_phys}")" ]] \
-        || fail "${DST_SUPERVISOR_DIR} does not exist — install Supervisor first (Phase 5.2/5.4)"
+        || fail "${DST_SUPERVISOR_DIR} does not exist — install Supervisor first (install-bootstrap-runtime installs it)"
 
     tmp="$(mktemp "${dst_phys}.XXXXXX")" || fail "cannot stage ${DST_CONF}"
 

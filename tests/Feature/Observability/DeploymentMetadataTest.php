@@ -180,7 +180,7 @@ it('keeps the whole application free of a runtime Git dependency for release ide
     foreach ([
         'config/deployment.php',
         'config/sentry.php',
-        // Phase 6B: Nightwatch's own `deploy` field is the canonical release
+        // the Nightwatch evaluation: Nightwatch's own `deploy` field is the canonical release
         // too, read the same way. A second vendor must not become a second
         // reason to shell out to Git.
         'config/nightwatch.php',

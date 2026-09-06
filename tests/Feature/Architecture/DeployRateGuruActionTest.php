@@ -57,7 +57,7 @@ it('defines a hardened reusable RateGuru deployment action', function () {
         ->toContain('-o UserKnownHostsFile="${RATEGURU_KNOWN_HOSTS_PATH}"')
         ->toContain("'sudo -n %q --target %q --release %q --artifact %q --checksum %q'")
         ->toContain('remote_command+=" --migrate"')
-        // Phase 7.4: the alignment mode is opt-in, names an operation and
+        // the controlled code alignment: the alignment mode is opt-in, names an operation and
         // never a commit, and is refused outright alongside a migration.
         ->toContain("operation_regex='^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$'")
         ->toContain('run-migrations must be false when restore-operation is set')

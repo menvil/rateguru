@@ -3,7 +3,7 @@
 use Illuminate\Support\Facades\File;
 
 /**
- * Phase 6 documentation is operational, not decorative: an operator has to be
+ * The Sentry runbook is operational, not decorative: an operator has to be
  * able to configure a target and verify a deployment from it. These assert the
  * facts that would silently rot — paths, variable names and the secret model —
  * against the real files they describe.

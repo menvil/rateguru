@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 #
-# install-bootstrap-host-layout — Phase 5 slice 5.3: users, groups and
+# Install-bootstrap-host-layout — : users, groups and
 # filesystem bootstrap for a clean RateGuru host.
 #
-# Modes (all root-only — this slice manages host identities and root-owned
+# Modes (all root-only — this installer manages host identities and root-owned
 # directory trees, and even its read-only inspection must see them exactly
 # as the mutating path would):
 #   --check   Strictly read-only. Validates the source registry, the
-#             package-created prerequisite accounts from slice 5.2, and the
-#             full slice 5.3 identity/filesystem contract, reporting the
+#             Package-created prerequisite accounts from install-bootstrap-runtime, and the
+#             Full install-bootstrap-host-layout identity/filesystem contract, reporting the
 #             intended --apply action for every unsatisfied item. Never
 #             creates, chowns, chmods or writes anything. Exits 0 only when
 #             the contract is already satisfied.
 #   --apply   Validates the entire plan before the first mutation, then
-#             idempotently converges only the Phase 5.3 identities and
+#             Idempotently converges only the host-layout bootstrap identities and
 #             directories in dependency order (groups, users, membership,
 #             deploy home/.ssh, host root directories, active-target
 #             directories, exact known ownership/mode drift), and ends with
 #             the same authoritative verification --verify runs.
-#   --verify  Read-only. The authoritative slice 5.3 contract gate: exits 0
+#   --verify  Read-only. The authoritative install-bootstrap-host-layout contract gate: exits 0
 #             only when every identity, membership and structural
 #             directory ownership/mode requirement holds exactly.
 #   --help    Usage.
@@ -28,7 +28,7 @@
 # checkout, validated through the standalone `targets` CLI (never
 # re-implemented here). The RUNTIME registry
 # (/home/www/rateguru/config/deployment-targets.json) does not exist on a
-# clean host — install-target-operations installs it in slice 5.4 — so this
+# Clean host — install-target-operations installs it in install-bootstrap-services — so this
 # installer never reads or depends on it. Only targets whose lifecycle is
 # `active` are provisioned; lifecycle=planned targets (tits-guru) cause
 # zero user, group or filesystem mutation and are reported as deliberately
@@ -50,7 +50,7 @@
 #            `try_files $uri $uri/ /index.php?$query_string`. Without this
 #            membership a clean host serves HTTP 404 for every request and
 #            the error log shows `stat() ... failed (13: Permission
-#            denied)` — the Phase 5.6 clean-VPS acceptance failed on
+#            Denied)` — the clean-VPS acceptance failed on
 #            exactly that, after the first deployment had already switched
 #            current;
 #   runtime user (rateguru-staging)        runs Laravel/PHP-FPM/queue
@@ -62,7 +62,7 @@
 #       state, and no runtime account ever joins www-data. Public mutable
 #       storage traversal is a separate, independent boundary: the narrow
 #       POSIX ACL (user:www-data:--x) that install-public-storage-access
-#       grants in slice 5.4 on shared and shared/storage;
+#       Grants in install-bootstrap-services on shared and shared/storage;
 #   root                                   owns the target namespace root
 #       (/home/www/rateguru/<target> is root:root 0755) and the host
 #       operational/configuration roots.
@@ -72,11 +72,11 @@
 # symlink's parent directory).
 #
 # Package-created prerequisite accounts: root, www-data and postgres are
-# created by the slice 5.2 packages, never by this installer. Their absence
-# fails closed with an explicit "Phase 5.2 runtime prerequisite is
+# Created by the install-bootstrap-runtime packages, never by this installer. Their absence
+# Fails closed with an explicit "the runtime prerequisite is
 # incomplete" message. The shared-host mail-capture accounts
 # (staging-mailpit, staging-mailtrap-local) belong to install-mail-capture
-# (slice 5.4 orchestration) and are never managed or validated here.
+# (install-bootstrap-services orchestration) and are never managed or validated here.
 #
 # Existing-data safety: reconciliation touches only the exact directory
 # entry whose owner/group/mode is part of the contract — never anything
@@ -88,7 +88,7 @@
 # on a clean host, never rewritten, never followed. .env, authorized_keys,
 # rclone.conf, releases, backups and deployment history are never read or
 # written (this installer creates the structural .ssh directory but never
-# an authorized_keys file — the deploy public key is Phase 5.4 secret
+# An authorized_keys file — the deploy public key is the service bootstrap secret
 # material).
 #
 # Accounts are persistent host state: convergence is fail-safe, idempotent
@@ -307,25 +307,25 @@ All modes require root.
             re-owned, and no other target is read or touched. Without it,
             this installer is exactly the host bootstrap it has always been.
 
-  --check   Read-only slice 5.3 contract validation plus the intended
+  --check   Read-only install-bootstrap-host-layout contract validation plus the intended
             --apply action for every unsatisfied item. Validates the source
-            registry and the slice 5.2 package-created prerequisite
+            registry and the install-bootstrap-runtime package-created prerequisite
             accounts, and never mutates anything. Exits 0 only when the
             contract is already satisfied.
   --apply   Validates the entire plan before the first mutation, then
-            idempotently creates/reconciles only the Phase 5.3 identities
+            idempotently creates/reconciles only the host-layout bootstrap identities
             and directories (groups, users, membership, deploy home/.ssh,
             host root directories, active-target directories, exact known
             ownership/mode drift), ending with the full --verify report.
             Never deletes accounts or paths, never renumbers UIDs/GIDs,
             never recurses into existing trees.
-  --verify  Read-only slice 5.3 contract gate: exit 0 only when every
+  --verify  Read-only install-bootstrap-host-layout contract gate: exit 0 only when every
             identity, membership and structural directory ownership/mode
             requirement holds exactly.
 
-Identity and filesystem scope only: packages belong to slice 5.2; service
+Identity and filesystem scope only: packages belong to install-bootstrap-runtime; service
 configuration, runtime registry, perimeter, SSH keys, ACLs, databases and
-TLS belong to slice 5.4. Only lifecycle=active targets are provisioned —
+TLS belong to install-bootstrap-services. Only lifecycle=active targets are provisioned —
 planned targets cause zero mutation.
 USAGE
 }
@@ -470,13 +470,13 @@ declare -A TGT_ROOT TGT_RUNTIME_USER TGT_RUNTIME_GROUP TGT_DEPLOY_USER
 declare -A TGT_CODE_GROUP TGT_INCOMING TGT_DEPLOY_HOME
 
 # load_source_contract — fail-closed source-of-truth loading. This installer
-# runs strictly after slice 5.2, so jq and the targets CLI are hard
-# prerequisites (their absence is a clear 5.2-incomplete error, never a
+# Runs strictly after install-bootstrap-runtime, so jq and the targets CLI are hard
+# prerequisites (their absence means install-bootstrap-runtime has not run, never a
 # degraded report). The registry is validated through the standalone
 # `targets` CLI — never re-implemented — and only then parsed.
 load_source_contract() {
     command -v jq >/dev/null 2>&1 \
-        || fail "jq is not available — the Phase 5.2 runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
+        || fail "jq is not available — the runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
 
     [[ -r "${SOURCE_REGISTRY}" ]] \
         || fail "source registry not readable: ${SOURCE_REGISTRY}"
@@ -581,7 +581,7 @@ report_targets() {
     done
 }
 
-# The package-created accounts slice 5.2 is responsible for. Never created
+# The package-created accounts install-bootstrap-runtime is responsible for. Never created
 # or reconfigured here — absence means the runtime bootstrap is incomplete.
 PREREQUISITE_USERS=(root www-data postgres)
 PREREQUISITE_GROUPS=(www-data postgres)
@@ -592,8 +592,8 @@ report_prerequisites() {
     local user entry uid
     for user in "${PREREQUISITE_USERS[@]}"; do
         if ! entry="$(passwd_entry "${user}")"; then
-            item MISSING "prerequisite:user:${user}" "missing — the Phase 5.2 runtime prerequisite is incomplete" \
-                "run install-bootstrap-runtime --apply (slice 5.2) first — package-owned accounts are never created here"
+            item MISSING "prerequisite:user:${user}" "missing — the runtime prerequisite is incomplete" \
+                "run install-bootstrap-runtime --apply first — package-owned accounts are never created here"
             continue
         fi
 
@@ -612,8 +612,8 @@ report_prerequisites() {
         if group_entry "${group}" >/dev/null; then
             item PASS "prerequisite:group:${group}" "exists (package-created group; never managed here)"
         else
-            item MISSING "prerequisite:group:${group}" "missing — the Phase 5.2 runtime prerequisite is incomplete" \
-                "run install-bootstrap-runtime --apply (slice 5.2) first — package-owned groups are never created here"
+            item MISSING "prerequisite:group:${group}" "missing — the runtime prerequisite is incomplete" \
+                "run install-bootstrap-runtime --apply first — package-owned groups are never created here"
         fi
     done
 }
@@ -849,8 +849,8 @@ report_filesystem() {
     target_scoped && host_report=report_host_root
 
     "${host_report}" "${RATEGURU_ROOT}" root root 0755 exact "host namespace root"
-    "${host_report}" "${RATEGURU_ROOT}/config" root root 0755 exact "non-secret host configuration root"
-    "${host_report}" "${RATEGURU_ROOT}/bin" root root 0755 exact "operational CLI root"
+    "${host_report}" "${RATEGURU_ROOT}/config" root root 0755 exact "non-secret host configuration root (contents installed by install-bootstrap-services)"
+    "${host_report}" "${RATEGURU_ROOT}/bin" root root 0755 exact "operational CLI root (contents installed by install-bootstrap-services)"
     "${host_report}" "${RATEGURU_ROOT}/backups" root root 0700 exact "local backup base (contents never scanned)"
     "${host_report}" "${RATEGURU_ROOT}/run" root root 0700 exact "operational lock directory"
     "${host_report}" "${LOG_DIR}" root root 0750 exact "operational log directory"
@@ -871,7 +871,7 @@ report_filesystem() {
         report_directory "${root}/locks" "${deploy_user}" "${code_group}" 2750 exact "deployment lock directory for ${target_id}"
         report_directory "${root}/deployments" "${deploy_user}" "${code_group}" 2750 exact "deployment history for ${target_id} (contents never scanned or re-owned)"
         report_directory "${deploy_home}" "${deploy_user}" "${deploy_user}" 0750 nw "deploy user home for ${target_id} (accepted with any non-group/other-writable mode)"
-        report_directory "${deploy_home}/.ssh" "${deploy_user}" "${deploy_user}" 0700 exact "structural SSH directory for ${target_id} (the deploy public key is Phase 5.4 secret material — never created or read here)"
+        report_directory "${deploy_home}/.ssh" "${deploy_user}" "${deploy_user}" 0700 exact "structural SSH directory for ${target_id} (the deploy public key is the service bootstrap secret material — never created or read here)"
         report_directory "${TGT_INCOMING[${target_id}]}" "${deploy_user}" "${deploy_user}" 0750 exact "incoming artifacts for ${target_id}"
 
         report_deployment_symlink "${root}/current" "atomic current-release switch for ${target_id}"
@@ -904,13 +904,13 @@ report_summary() {
         if target_scoped; then
             printf 'HOST LAYOUT CONTRACT (%s): SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.3 CONTRACT: SATISFIED\n'
+            printf 'HOST LAYOUT CONTRACT: SATISFIED\n'
         fi
     else
         if target_scoped; then
             printf 'HOST LAYOUT CONTRACT (%s): NOT SATISFIED\n' "${TARGET_SCOPE}"
         else
-            printf 'SLICE 5.3 CONTRACT: NOT SATISFIED\n'
+            printf 'HOST LAYOUT CONTRACT: NOT SATISFIED\n'
         fi
     fi
 }
@@ -921,7 +921,7 @@ contract_satisfied() {
 
 # run_contract_report — the full read-only report used by --check and
 # --verify (and by --apply as its closing gate). Exits 0 only when the
-# slice 5.3 contract is satisfied.
+# host-layout contract is satisfied.
 run_contract_report() {
     printf 'RateGuru bootstrap host layout installer (%s mode)\n' "${MODE}"
 
@@ -948,19 +948,19 @@ require_root() {
     [[ "${EFFECTIVE_UID}" == "0" ]] || fail "--${MODE} must run as root"
 }
 
-# apply_gate_prerequisites — the slice 5.2 package-created accounts must
+# Apply_gate_prerequisites — the install-bootstrap-runtime package-created accounts must
 # already exist; they are never created or reconfigured here.
 apply_gate_prerequisites() {
     local user
     for user in "${PREREQUISITE_USERS[@]}"; do
         passwd_entry "${user}" >/dev/null \
-            || fail "package-created account '${user}' is missing — the Phase 5.2 runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
+            || fail "package-created account '${user}' is missing — the runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
     done
 
     local group
     for group in "${PREREQUISITE_GROUPS[@]}"; do
         group_entry "${group}" >/dev/null \
-            || fail "package-created group '${group}' is missing — the Phase 5.2 runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
+            || fail "package-created group '${group}' is missing — the runtime prerequisite is incomplete (run install-bootstrap-runtime --apply first)"
     done
 }
 

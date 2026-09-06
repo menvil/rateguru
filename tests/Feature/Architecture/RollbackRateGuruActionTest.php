@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\File;
 use Symfony\Component\Yaml\Yaml;
 
 /**
- * The one canonical GitHub-side rollback implementation (Phase 7.1, Part D).
+ * The one canonical GitHub-side rollback implementation, shared by both environments.
  *
  * Transport and orchestration only: every rollback safety rule — deployment
  * lock, target lifecycle, release path validation, the atomic current/previous
@@ -76,7 +76,7 @@ it('defines a hardened reusable RateGuru rollback action', function () {
         'Configure SSH',
         'Roll back via target-aware wrapper',
         'Resolve the release now serving the target',
-        // Phase 7.2A: one step records the restored release in every
+        // the deployment observability work: one step records the restored release in every
         // observability system, through the shared action, rather than a
         // Sentry-only step here.
         'Record the restored release in Sentry and Nightwatch',
@@ -306,7 +306,7 @@ it('never fails an already-healthy rollback for an observability reason', functi
         ->and(data_get($resolve, 'run'))
         ->toContain("'basename \"\$(readlink -f %q)\"'")
         ->toContain('release_id=${active_release}')
-        // Phase 7.2A: the commit is resolved alongside the release, from that
+        // the deployment observability work: the commit is resolved alongside the release, from that
         // release's own release.json, because a rollback request carries none.
         ->toContain('source_sha=${active_sha}')
         ->toContain("jq -r '.source_sha // empty'")
