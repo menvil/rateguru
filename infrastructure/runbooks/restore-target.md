@@ -13,16 +13,19 @@ primitives it drives (`fetch-backup`, `verify-backup`, `restore-database`,
 
 These are different operations and must never be conflated.
 
-| | RESTORE TARGET DATA (this runbook, Phase 7.3) | CONTROLLED CODE ALIGNMENT (Phase 7.4, [`github-restore.md`](github-restore.md)) | RECOVER HOST (Phase 7.6, future) |
-|---|---|---|---|
-| What was lost | data | nothing — the data is already back, the code does not match it | the whole server |
-| Starting point | a live, deployed, healthy-ish target | a target HELD by a completed restore | a new, empty VPS |
-| Infrastructure | already installed and correct | already installed and correct | must be prepared first |
-| Secrets / `.env` | already present, never touched | already present, never touched | must be recovered |
-| Server configuration | already present, never touched | already present, never touched | must be rebuilt |
-| Application code | already deployed, never rebuilt | rebuilt in GitHub Actions from the backup's exact `source_sha` and deployed | rebuilt from `release.json.source_sha` |
-| Migrations | never | never (the code is being made to match the data) | never (the rebuilt code already matches) |
-| What is restored | `database.dump` + `storage-app.tar.gz` | nothing — one release is installed | those, plus everything above |
+| | RESTORE TARGET DATA (this runbook) | CONTROLLED CODE ALIGNMENT ([`github-restore.md`](github-restore.md)) | REPAIR TARGET ([`repair-target.md`](repair-target.md)) | RECOVER HOST (future) |
+|---|---|---|---|---|
+| What was lost | data | nothing — the data is already back, the code does not match it | this target's own infrastructure | the whole server |
+| Starting point | a live, deployed, healthy-ish target | a target HELD by a completed restore | a live, deployed target on a healthy host | a new, empty VPS |
+| Infrastructure | already installed and correct | already installed and correct | **the thing being converged**, for this target only | must be prepared first |
+| Secrets / `.env` | already present, never touched | already present, never touched | already present, never touched | must be recovered |
+| Server configuration | already present, never touched | already present, never touched | reconverged from what is committed | must be rebuilt |
+| Application code | already deployed, never rebuilt | rebuilt in GitHub Actions from the backup's exact `source_sha` and deployed | already deployed, never rebuilt or switched | rebuilt from `release.json.source_sha` |
+| Migrations | never | never (the code is being made to match the data) | never | never (the rebuilt code already matches) |
+| What is restored | `database.dump` + `storage-app.tar.gz` | nothing — one release is installed | nothing — no backup is read | those, plus everything above |
+
+A restore guard blocks Repair Target in every state, so these two can never run
+against the same target at the same time.
 
 A backup contains seven files. A live restore **applies exactly two of them**:
 

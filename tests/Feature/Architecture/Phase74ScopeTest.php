@@ -116,6 +116,8 @@ it('adds exactly one restore action, two operator workflows and one server wrapp
         'prepare-production-host.yml',
         'prepare-staging-host.yml',
         'release.yml',
+        'repair-production.yml',
+        'repair-staging.yml',
         'restore-production.yml',
         'restore-staging.yml',
         'rollback-production.yml',
@@ -133,6 +135,7 @@ it('adds exactly one restore action, two operator workflows and one server wrapp
         'deploy-rateguru',
         'prepare-rateguru-host',
         'record-rateguru-deployment',
+        'repair-rateguru-target',
         'restore-rateguru',
         'rollback-rateguru',
         'sentry-release',
@@ -416,27 +419,24 @@ it('never migrates, health-checks or resumes a target during a controlled alignm
 });
 
 // =============================================================================
-// No Repair, no Recover, no production activation
+// No Recover, no production activation
 // =============================================================================
 
-it('implements no Repair Target and no Recover Host', function () {
+it('implements no Recover Host', function () {
     foreach ([
-        'infrastructure/scripts/repair-target',
         'infrastructure/scripts/recover-host',
-        '.github/workflows/repair-staging.yml',
-        '.github/workflows/repair-production.yml',
         '.github/workflows/recover-staging-host.yml',
         '.github/workflows/recover-production-host.yml',
-        '.github/actions/repair-rateguru/action.yml',
         '.github/actions/recover-rateguru-host/action.yml',
     ] as $path) {
         expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to a later phase, not 7.4");
     }
 
-    // --inspect refuses the two states that need repair rather than a
-    // deployment, and says so.
+    // --inspect refuses the two guard states that need manual recovery rather
+    // than a deployment, and says so — including that Repair Target is not a
+    // way out of either, because it refuses any target under a restore guard.
     expect(File::get(base_path('infrastructure/scripts/restore-target')))
-        ->toContain('Repair Target is Phase 7.5');
+        ->toContain('Repair Target is not a way out either');
 });
 
 it('activates no production target, provisions nothing and changes no DNS', function () {

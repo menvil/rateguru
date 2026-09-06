@@ -2553,7 +2553,7 @@ it('refuses to inspect an operation that is not this target own held code alignm
     // their own rather than a generic refusal: they need manual recovery,
     // never a build and never a deployment.
     ['guard-is-in-progress', 'It is NOT a code-alignment hold'],
-    ['guard-is-failed-held', 'Repair Target is Phase 7.5'],
+    ['guard-is-failed-held', 'Repair Target is not a way out either'],
     ['guard-and-state-disagree-about-the-commit', 'refusing to align a target whose own restore documents disagree'],
     ['abbreviated-required-commit', 'no full 40-character commit'],
     ['state-status-is-not-held', "has status 'running'"],

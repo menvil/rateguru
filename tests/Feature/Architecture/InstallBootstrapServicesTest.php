@@ -1870,3 +1870,553 @@ it('reports stale workers rather than crashing when nginx is stopped or workers 
         bsvcCleanup($scratch);
     }
 });
+
+// =============================================================================
+// Target-scoped mode: --target TARGET_ID
+// =============================================================================
+//
+// The same contract, narrowed to one target. Everything host-wide — the SSH
+// deploy restriction, the operations and perimeter families, mail capture, the
+// base services themselves — stops being this run's to converge and becomes a
+// prerequisite it only inspects. That is what keeps repairing one live target
+// from quietly turning into re-bootstrapping the host underneath it.
+//
+// The first test is the one that matters most: WITHOUT --target nothing about
+// this installer changed.
+
+it('leaves host mode exactly as it was: no --target, no target vocabulary anywhere in the report', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        [$exit, $output] = bsvcRun(['--check'], $env);
+
+        expect($exit)->toBe(0, "host mode must still verify the compliant fixture clean:\n{$output}");
+
+        expect($output)->toContain('Bootstrap services installer (check):');
+
+        // Every host-wide item is still this run's own.
+        expect($output)->toContain('SSH deploy restriction');
+        expect($output)->toContain('config-test:sshd');
+        expect($output)->toContain('mail-capture:verify-mail-capture');
+
+        // The two things that only exist in target mode must not leak into it.
+        expect($output)->not->toContain('HOST-REQ');
+        expect($output)->not->toContain('Scope: target');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('narrows to one target and leaves every host-wide family out of scope', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        [$exit, $output] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($exit)->toBe(0, "target mode must verify the compliant fixture clean:\n{$output}");
+
+        expect($output)->toContain('Scope: target staging-main only');
+        expect($output)->toContain('TARGET SERVICES CONTRACT (staging-main): SATISFIED');
+
+        // Host-wide: never this run's to own.
+        expect($output)->not->toContain('SSH deploy restriction');
+        expect($output)->not->toContain('config-test:sshd');
+        expect($output)->not->toContain('mail-capture:verify-mail-capture');
+
+        // The operations and perimeter families are not reported at all —
+        // see the health-circularity test below for why verifying them from
+        // inside a target repair is not merely out of scope but unsound.
+        expect($output)->not->toContain('operations:install-target-operations');
+        expect($output)->not->toContain('perimeter:install-target-perimeter');
+
+        // The layout prerequisite IS asked, and at the same scope.
+        expect($output)->toContain('prerequisite:install-bootstrap-host-layout');
+        expect($output)->toContain('--verify --target staging-main');
+
+        // Base services become prerequisites rather than things to enable.
+        expect($output)->toContain('host-owned, never enabled or started by a target-scoped run');
+
+        // The target's own service configuration is reported exactly as before.
+        expect($output)->toContain('rateguru-staging-queue');
+        expect($output)->toContain('public-storage-acl:staging-main');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('gates a target apply on that target layout only, not on the whole host layout', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        [$exit, $output] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($exit)->toBe(0, $output);
+
+        $children = bsvcLog($scratch, 'children.log');
+
+        // The layout gate is asked at the SAME scope. Demanding the whole host
+        // layout would make repairing one target fail because a different
+        // active target had drifted.
+        expect($children)->toContain('hostlayout-installer --verify --target staging-main');
+
+        // The host-wide families are only ever verified, never applied.
+        foreach (['operations-installer', 'perimeter-installer', 'mail-capture-installer'] as $child) {
+            expect($children)->not->toContain($child.' --apply');
+        }
+
+        // The per-target ACL owner is still delegated to, at target scope.
+        expect($children)->toContain('public-storage-installer');
+        expect($children)->toContain('--target staging-main');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('is not blocked by a host-wide family whose verify depends on the target being healthy', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // install-target-operations --verify runs the application health check
+        // on a DEPLOYED target. A broken vhost or pool is exactly what a target
+        // repair fixes, so gating the repair on this verify would mean the site
+        // has to be healthy before it can be made healthy.
+        @unlink($scratch.'/toggles/operations-installer-compliant');
+        @unlink($scratch.'/toggles/perimeter-installer-compliant');
+
+        [$checkExit, $checkOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($checkExit)->toBe(0, "a stale host-wide family must not fail a target-scoped check:\n{$checkOutput}");
+        expect($checkOutput)->not->toContain('operations:install-target-operations');
+        expect($checkOutput)->not->toContain('perimeter:install-target-perimeter');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->toBe(0, "a stale host-wide family must not refuse a target-scoped apply:\n{$applyOutput}");
+
+        // And it is never converged either — it stays the host bootstrap's.
+        expect(bsvcLog($scratch, 'children.log'))->not->toContain('operations-installer --apply');
+        expect(bsvcLog($scratch, 'children.log'))->not->toContain('perimeter-installer --apply');
+
+        // Host mode still owns and converges both.
+        foreach (glob($scratch.'/log/*') ?: [] as $log) {
+            file_put_contents($log, '');
+        }
+
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->toBe(0, $hostOutput);
+        expect(bsvcLog($scratch, 'children.log'))->toContain('operations-installer --apply');
+        expect(bsvcLog($scratch, 'children.log'))->toContain('perimeter-installer --apply');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('refuses a target-scoped apply when this target own layout is not converged', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // The one prerequisite a target-scoped run really does depend on, and
+        // it is asked at the same scope: demanding the WHOLE host layout would
+        // make repairing one target fail because a different one had drifted.
+        @unlink($scratch.'/toggles/hostlayout-installer-compliant');
+
+        $before = bsvcTreeSnapshot($scratch.'/fs');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->not->toBe(0, $applyOutput);
+        expect($applyOutput)->toContain('install-bootstrap-host-layout --verify --target staging-main failed');
+        expect($applyOutput)->toContain('no service/config mutation was performed');
+
+        expect(bsvcSystemctlMutations($scratch))->toBe([]);
+        expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before);
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('never enables a base service, rewrites SSH or converges mail capture in target mode', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        [$exit, $output] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($exit)->toBe(0, $output);
+
+        $installed = bsvcLog($scratch, 'install.log');
+
+        // The one file governing every deploy account on the machine.
+        expect($installed)->not->toContain('70-rateguru-deploy.conf');
+
+        // sshd is never even asked to validate, let alone reloaded.
+        expect(bsvcLog($scratch, 'sshd.log'))->toBe('');
+
+        foreach (bsvcSystemctlMutations($scratch) as $mutation) {
+            foreach (['postgresql', 'redis', 'mailpit', 'mailtrap', 'ssh'] as $hostUnit) {
+                expect($mutation)->not->toContain($hostUnit);
+            }
+        }
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('refuses an unknown target and a planned target before any work', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        [$unknownExit, $unknownOutput] = bsvcRun(['--check', '--target', 'not-a-target'], $env);
+
+        expect($unknownExit)->not->toBe(0);
+        expect($unknownOutput)->toContain('unknown target: not-a-target');
+
+        [$plannedExit, $plannedOutput] = bsvcRun(['--check', '--target', 'tits-guru'], $env);
+
+        expect($plannedExit)->not->toBe(0);
+        expect($plannedOutput)->toContain('tits-guru is lifecycle=planned');
+
+        expect(bsvcSystemctlMutations($scratch))->toBe([]);
+        expect(bsvcLog($scratch, 'install.log'))->toBe('');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('mutates only the named target on a real two-active-target host', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        [$script] = bsvcMultiTargetRepo($scratch);
+
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+        bsvcAddSecondTargetHostState($scratch);
+
+        // Drift scoped to the SELECTED target, so the run has something real
+        // to converge. A --check alone would prove only that the report is
+        // quiet about the other target; the property that matters is that a
+        // mutation stays inside the one that was named.
+        $enabled = $scratch.'/fs/etc/nginx/sites-enabled/rateguru-staging';
+        @unlink($enabled);
+
+        $secondBefore = bsvcTreeSnapshot($scratch.'/fs/etc/nginx');
+
+        $run = static function (array $arguments) use ($script, $env): string {
+            $process = proc_open(
+                array_merge(['bash', $script], $arguments),
+                [1 => ['pipe', 'w'], 2 => ['redirect', 1]],
+                $pipes,
+                null,
+                $env,
+            );
+
+            $output = stream_get_contents($pipes[1]);
+            fclose($pipes[1]);
+            proc_close($process);
+
+            return $output;
+        };
+
+        $output = $run(['--apply', '--target', 'staging-main']);
+
+        // The narrowed run describes and touches one target, even though both
+        // are lifecycle=active in this registry.
+        expect($output)->toContain('Scope: target staging-main only');
+        expect($output)->not->toContain('staging-second');
+        expect($output)->not->toContain('rateguru-second');
+
+        expect(is_link($enabled))->toBeTrue("the selected target's site was not re-enabled:\n{$output}");
+
+        // Everything the other target owns is byte-identical, and no mutation
+        // tool was ever handed one of its paths.
+        $secondAfter = bsvcTreeSnapshot($scratch.'/fs/etc/nginx');
+
+        foreach ($secondBefore as $path => $state) {
+            if (str_contains($path, 'second')) {
+                expect($secondAfter[$path] ?? null)->toBe($state, "the other target's {$path} changed");
+            }
+        }
+
+        foreach (['install.log', 'chown.log', 'chmod.log', 'systemctl.log', 'children.log'] as $log) {
+            expect(bsvcLog($scratch, $log))->not->toContain('rateguru-second');
+            expect(bsvcLog($scratch, $log))->not->toContain('staging-second');
+        }
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('does not let shared mail-capture material block a healthy target', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        // The shared mail-capture vhosts have no per-target component, and the
+        // TLS material they reference belongs to the host bootstrap. A target
+        // that is itself perfectly fine must not be unrepairable because of it.
+        $env = bsvcFixture($scratch, [
+            'profile' => 'compliant',
+            'omitExternal' => [
+                '/etc/letsencrypt/live/staging-mail-capture/fullchain.pem',
+                '/etc/letsencrypt/live/staging-mail-capture/privkey.pem',
+            ],
+        ]);
+
+        [$targetExit, $targetOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($targetExit)->toBe(0, "a missing mail certificate must not fail a target-scoped check:\n{$targetOutput}");
+        expect($targetOutput)->not->toContain('staging-mail-capture');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->toBe(0, "a missing mail certificate must not refuse a target-scoped apply:\n{$applyOutput}");
+
+        // Host mode still demands it, because there it really is this run's
+        // prerequisite.
+        [$hostExit, $hostOutput] = bsvcRun(['--check'], $env);
+
+        expect($hostExit)->toBe(1);
+        expect($hostOutput)->toContain('staging-mail-capture');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('reads a parser failure as this target own drift when its configuration is damaged', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // Somebody damaged this target's vhost, so nginx -t fails BECAUSE of
+        // it. Replacing that file with the committed one is the repair —
+        // refusing here would decline the case this whole mode exists for.
+        file_put_contents(
+            $scratch.'/fs/etc/nginx/sites-available/rateguru-staging',
+            "this is not valid nginx configuration\n",
+        );
+        touch($scratch.'/toggles/nginx-t-fail');
+
+        [$exit, $output] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($exit)->toBe(1, $output);
+        expect($output)->toContain('DRIFT    config-test:nginx');
+        expect($output)->toContain("this target's own configuration is drifted");
+        expect($output)->not->toContain('CONFLICT config-test:nginx');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('keeps a parser failure a conflict when this target configuration is already correct', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // Every file this target owns is byte-identical to what is committed,
+        // so the parser is failing somewhere else on the host. Converging this
+        // target would change nothing and fix nothing.
+        touch($scratch.'/toggles/nginx-t-fail');
+
+        [$targetExit, $targetOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($targetExit)->toBe(1, $targetOutput);
+        expect($targetOutput)->toContain('CONFLICT config-test:nginx');
+        expect($targetOutput)->not->toContain('DRIFT    config-test:nginx');
+
+        // Host mode is unchanged.
+        [$hostExit, $hostOutput] = bsvcRun(['--check'], $env);
+
+        expect($hostExit)->toBe(1);
+        expect($hostOutput)->toContain('CONFLICT config-test:nginx');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('reports an unconverged target layout as repairable drift, not as a conflict', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // This target's layout being unconverged is a repairable condition
+        // with a named owner. Calling it a conflict makes an orchestrator
+        // refuse the case it exists for.
+        @unlink($scratch.'/toggles/hostlayout-installer-compliant');
+
+        [$exit, $output] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($exit)->toBe(1, $output);
+        expect($output)->toContain('DRIFT    prerequisite:install-bootstrap-host-layout');
+        expect($output)->toContain('hostlayout-installer --apply --target staging-main');
+        expect($output)->not->toContain('CONFLICT prerequisite:install-bootstrap-host-layout');
+
+        // Host mode keeps the hard gate it always had.
+        [$hostExit, $hostOutput] = bsvcRun(['--check'], $env);
+
+        expect($hostExit)->toBe(1);
+        expect($hostOutput)->toContain('CONFLICT slice-5.3:install-bootstrap-host-layout');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('refuses a target apply when a base service is active but not enabled, and never enables it', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // The gap that made the boundary declarative rather than real: the
+        // prerequisite checked only is-active, so an active-but-disabled unit
+        // reported PASS and the convergence below quietly enabled it.
+        unlink($scratch.'/svc/php8.5-fpm.enabled');
+
+        [$checkExit, $checkOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($checkExit)->toBe(1, $checkOutput);
+        expect($checkOutput)->toContain('HOST-REQ service:php8.5-fpm');
+        expect($checkOutput)->toContain('active but not enabled');
+
+        $before = bsvcTreeSnapshot($scratch.'/fs');
+
+        foreach (glob($scratch.'/log/*') ?: [] as $log) {
+            file_put_contents($log, '');
+        }
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->not->toBe(0, $applyOutput);
+        expect($applyOutput)->toContain('base host service(s) are not enabled and active');
+        expect($applyOutput)->toContain('No mutation was performed');
+
+        expect(bsvcSystemctlMutations($scratch))->toBe([], 'the refused target apply touched a service');
+        expect(file_exists($scratch.'/svc/php8.5-fpm.enabled'))->toBeFalse('the target apply enabled a base host service');
+        expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before);
+
+        // Host mode still owns it and enables it, unchanged.
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->toBe(0, $hostOutput);
+        expect(file_exists($scratch.'/svc/php8.5-fpm.enabled'))->toBeTrue();
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('refuses a target apply when a base service is stopped, and never starts it', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        unlink($scratch.'/svc/supervisor.active');
+
+        $before = bsvcTreeSnapshot($scratch.'/fs');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->not->toBe(0, $applyOutput);
+        expect($applyOutput)->toContain('supervisor is not active');
+        expect($applyOutput)->toContain('No mutation was performed');
+
+        expect(bsvcSystemctlMutations($scratch))->toBe([]);
+        expect(file_exists($scratch.'/svc/supervisor.active'))->toBeFalse('the target apply started a base host service');
+        expect(bsvcTreeSnapshot($scratch.'/fs'))->toBe($before);
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('repairs a target while the host SSH restriction is damaged, and never touches it', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        $restriction = $scratch.'/fs/etc/ssh/sshd_config.d/70-rateguru-deploy.conf';
+        $decoy = $scratch.'/fs/etc/ssh/elsewhere.conf';
+
+        // A host-global SSH problem that has nothing to do with this target:
+        // the deploy restriction is a symlink where a regular file belongs.
+        file_put_contents($decoy, "Match User deploy-rateguru-staging\n");
+        unlink($restriction);
+        symlink($decoy, $restriction);
+
+        // ...and drift that IS this target's, so the run has something to do.
+        $enabled = $scratch.'/fs/etc/nginx/sites-enabled/rateguru-staging';
+        @unlink($enabled);
+
+        [$checkExit, $checkOutput] = bsvcRun(['--check', '--target', 'staging-main'], $env);
+
+        expect($checkExit)->toBe(1, $checkOutput);
+        expect($checkOutput)->not->toContain('70-rateguru-deploy.conf');
+        expect($checkOutput)->not->toContain('sshd_config.d');
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        // The point of the whole mode: a target repair does not depend on host
+        // configuration it never reads, reports or converges.
+        expect($applyExit)->toBe(0, "a damaged host SSH restriction must not block a target repair:\n{$applyOutput}");
+        expect(is_link($enabled))->toBeTrue('the target site was not re-enabled');
+
+        // And the damaged file is exactly as it was found.
+        expect(is_link($restriction))->toBeTrue('the target apply replaced the host SSH restriction');
+        expect(readlink($restriction))->toBe($decoy);
+        expect(bsvcLog($scratch, 'install.log'))->not->toContain('70-rateguru-deploy.conf');
+        expect(bsvcLog($scratch, 'sshd.log'))->toBe('');
+
+        // Host mode still owns it, and still refuses the same damage.
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->not->toBe(0);
+        expect($hostOutput)->toContain('70-rateguru-deploy.conf');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});
+
+it('repairs a target on a host with no sshd_config.d at all', function () {
+    $scratch = bsvcScratchDir();
+
+    try {
+        $env = bsvcFixture($scratch, ['profile' => 'compliant']);
+
+        // The directory the SSH restriction lives in is gone entirely. In host
+        // mode that is a hard prerequisite; a target-scoped run installs
+        // nothing there and must not care.
+        exec('rm -rf '.escapeshellarg($scratch.'/fs/etc/ssh/sshd_config.d'));
+
+        $enabled = $scratch.'/fs/etc/nginx/sites-enabled/rateguru-staging';
+        @unlink($enabled);
+
+        [$applyExit, $applyOutput] = bsvcRun(['--apply', '--target', 'staging-main'], $env);
+
+        expect($applyExit)->toBe(0, "a missing sshd_config.d must not block a target repair:\n{$applyOutput}");
+        expect(is_link($enabled))->toBeTrue();
+        expect(is_dir($scratch.'/fs/etc/ssh/sshd_config.d'))->toBeFalse('the target apply created a host SSH directory');
+
+        // Host mode still requires it.
+        [$hostExit, $hostOutput] = bsvcRun(['--apply'], $env);
+
+        expect($hostExit)->not->toBe(0);
+        expect($hostOutput)->toContain('sshd_config.d');
+    } finally {
+        bsvcCleanup($scratch);
+    }
+});

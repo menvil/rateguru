@@ -234,12 +234,52 @@ fail() {
 MODE=""
 MODE_SEEN=false
 
+# --- Target scope -------------------------------------------------------------
+#
+# Empty is the host service bootstrap this installer has always been: every
+# active target, plus the host-wide families it owns — the operations bundle,
+# the perimeter, the SSH restriction, mail capture and base service enablement.
+#
+# Set by --target, it narrows the SAME contract to the service configuration
+# that belongs to one target: its support log directory, its Nginx site and
+# enabled link, its PHP-FPM pool, its Supervisor program, its scheduler cron and
+# its public-storage ACL. Repairing one target must never silently rewrite the
+# host's SSH policy, its perimeter, its operational bundle or its mail capture,
+# so those are out of scope: not reported, not verified and not touched.
+#
+# Not verified matters as much as not touched, and the reason only becomes
+# visible from inside a repair: install-target-operations --verify runs the
+# application health check on a deployed target. A broken vhost or pool is
+# exactly the damage a target repair fixes, so checking that family here would
+# mean the site has to be healthy before it can be made healthy.
+#
+# What IS asked, and at the same scope, is this target's own layout — see
+# apply_gate_prerequisites — plus the base services, which are checked and
+# never started.
+#
+# Nothing about the contract itself changes. There is no second renderer, no
+# second transaction mechanism and no second convergence path for target mode.
+TARGET_SCOPE=""
+
+target_scoped() {
+    [[ -n "${TARGET_SCOPE}" ]]
+}
+
 COUNT_PASS=0
 COUNT_MISSING=0
 COUNT_DRIFT=0
 COUNT_WARN=0
 COUNT_CONFLICT=0
 COUNT_DEFERRED=0
+
+# HOST-REQ ("host prerequisite") is only ever non-zero in target mode: a base
+# host service that is not running. It blocks like a CONFLICT — a target cannot
+# serve on a host whose nginx, PHP-FPM or Supervisor is down — but it says
+# plainly that starting one is a host operation, not this one.
+#
+# Eight characters on purpose: the report is a fixed-width table whose exact
+# spacing is part of this installer's asserted output contract.
+COUNT_HOST_REQ=0
 
 section() {
     printf '\n%s\n' "$1"
@@ -267,6 +307,7 @@ item() {
         WARN)     COUNT_WARN=$((COUNT_WARN + 1)) ;;
         CONFLICT) COUNT_CONFLICT=$((COUNT_CONFLICT + 1)) ;;
         DEFERRED) COUNT_DEFERRED=$((COUNT_DEFERRED + 1)) ;;
+        HOST-REQ) COUNT_HOST_REQ=$((COUNT_HOST_REQ + 1)) ;;
         *)        fail "internal: unknown item status: ${status}" ;;
     esac
 
@@ -288,9 +329,25 @@ Usage:
   install-bootstrap-services --check
   install-bootstrap-services --apply
   install-bootstrap-services --verify
+
+  install-bootstrap-services --check  --target TARGET_ID
+  install-bootstrap-services --apply  --target TARGET_ID
+  install-bootstrap-services --verify --target TARGET_ID
+
   install-bootstrap-services --help
 
 All modes require root.
+
+  --target  Narrow the SAME contract to one active target's service
+            configuration: its support log directory, Nginx site and enabled
+            link, PHP-FPM pool, Supervisor program, scheduler cron and
+            public-storage ACL. This target's own layout is verified at the
+            same scope, and the base services are checked but never started.
+            Everything host-wide — the operations bundle, the sudo perimeter,
+            the SSH restriction, mail capture and the material their vhosts
+            reference — is out of scope entirely: not reported, not verified,
+            not touched. Without it, this installer is exactly the host
+            service bootstrap it has always been.
 
   --check   Read-only slice 5.4 contract validation plus the intended
             --apply action for every unsatisfied item. Runs the 5.2/5.3
@@ -523,6 +580,37 @@ load_source_contract() {
     if [[ -n "${FS_ROOT}" ]] && [[ "${FS_ROOT}" != /* ]]; then
         fail "fixture filesystem root must be an absolute path: ${FS_ROOT}"
     fi
+
+    narrow_to_target_scope
+}
+
+# narrow_to_target_scope — in target mode, reduce the loaded contract to the one
+# requested target after the WHOLE registry has been validated.
+#
+# The registry is validated in full first, so a target-scoped run still refuses a
+# registry that is inconsistent anywhere. Only then is the scope narrowed, and
+# every per-target report and convergence below runs unchanged over the shorter
+# list.
+narrow_to_target_scope() {
+    target_scoped || return 0
+
+    local known=false target_id
+    for target_id in "${ACTIVE_TARGETS[@]}"; do
+        [[ "${target_id}" == "${TARGET_SCOPE}" ]] && known=true
+    done
+
+    if [[ "${known}" != true ]]; then
+        for target_id in "${PLANNED_TARGETS[@]}"; do
+            if [[ "${target_id}" == "${TARGET_SCOPE}" ]]; then
+                fail "target ${TARGET_SCOPE} is lifecycle=planned — this installer never configures a planned target, in host mode or target mode"
+            fi
+        done
+
+        fail "unknown target: ${TARGET_SCOPE} — not present in ${SOURCE_REGISTRY}"
+    fi
+
+    ACTIVE_TARGETS=("${TARGET_SCOPE}")
+    PLANNED_TARGETS=()
 }
 
 # --- Source service configuration paths ---------------------------------------
@@ -763,9 +851,18 @@ all_external_prerequisites() {
         for target_id in "${ACTIVE_TARGETS[@]}"; do
             nginx_external_prerequisites "$(src_nginx_site "${target_id}")"
         done
-        for src in "${SRC_MAIL_NGINX_SOURCES[@]}"; do
-            nginx_external_prerequisites "${src}"
-        done
+
+        # The shared mail-capture vhosts have no per-target component, so a
+        # target-scoped run has nothing to say about their TLS material. It
+        # matters more than tidiness: a missing mail certificate would
+        # otherwise block the repair of a perfectly healthy target on secret
+        # material that belongs to the host bootstrap and that this run can
+        # never provide.
+        if ! target_scoped; then
+            for src in "${SRC_MAIL_NGINX_SOURCES[@]}"; do
+                nginx_external_prerequisites "${src}"
+            done
+        fi
     } | sort -u
 }
 
@@ -778,6 +875,17 @@ report_external_prerequisites() {
 
         if stat_probe "${path}" >/dev/null; then
             item PASS "external-prerequisite:${category}" "present at ${path} (content never read or validated)"
+        elif target_scoped; then
+            # CONFLICT, not MISSING, and the difference is load-bearing.
+            #
+            # MISSING means "--apply converges this". --apply never converges
+            # an external prerequisite in any mode — it refuses, because the
+            # material is operator-supplied and is never generated here. An
+            # orchestrator reading this report treats MISSING as repairable
+            # and proceeds, and would then discover the refusal only after
+            # converging something else. Saying CONFLICT stops it beforehand.
+            item CONFLICT "external-prerequisite:${category}" "absent: ${path}" \
+                "provide it through host preparation — a target-scoped run never generates, copies or fakes external secret material, and --apply refuses while it is absent"
         else
             item MISSING "external-prerequisite:${category}" "absent: ${path}" \
                 "provide manually before --apply — external secret material is never generated, copied or faked by this installer"
@@ -840,13 +948,53 @@ report_prerequisite_slices() {
     section "PREREQUISITES (authoritative child verifies — never re-implemented here)"
 
     report_child_gate "slice-5.2:install-bootstrap-runtime" "${RUNTIME_INSTALLER_BIN}" --verify
-    report_child_gate "slice-5.3:install-bootstrap-host-layout" "${HOSTLAYOUT_INSTALLER_BIN}" --verify
+
+    # In target mode the layout prerequisite is asked at the SAME scope, for
+    # the same reason apply_gate_prerequisites does: demanding the WHOLE host
+    # layout here would make repairing one target fail because a DIFFERENT
+    # active target had drifted, and would report this target's own layout
+    # drift — the thing a repair exists to fix — as an unfixable conflict.
+    if target_scoped; then
+        # DRIFT, not CONFLICT. This target's layout being unconverged is not an
+        # unsafe condition — it is a repairable one with a named owner, and
+        # reporting it as a conflict makes an orchestrator refuse the very case
+        # it exists for. --apply still refuses outright: see
+        # apply_gate_prerequisites, which is the gate that actually protects
+        # this installer's own mutations.
+        report_prerequisite_drift "prerequisite:install-bootstrap-host-layout" \
+            "${HOSTLAYOUT_INSTALLER_BIN}" --verify --target "${TARGET_SCOPE}"
+    else
+        report_child_gate "slice-5.3:install-bootstrap-host-layout" "${HOSTLAYOUT_INSTALLER_BIN}" --verify
+    fi
 }
 
 # report_child_gate NAME BIN ARGS... — runs a read-only child verify and
 # reports it. A failing prerequisite is CONFLICT in every mode: --apply must
 # not run until the earlier slice converges, and that convergence belongs to
 # the earlier slice's own --apply, never to this installer.
+# report_prerequisite_drift NAME BIN ARGS... — a prerequisite that some other
+# installer owns and can converge. Same probe as report_child_gate, different
+# verdict: DRIFT says "repairable, by that installer", where CONFLICT says
+# "nobody may fix this automatically".
+report_prerequisite_drift() {
+    local name="$1" bin="$2"
+    shift 2
+
+    if [[ ! -x "${bin}" ]]; then
+        item CONFLICT "${name}" "installer not executable: ${bin}" \
+            "run from a full repository checkout"
+        return 0
+    fi
+
+    if "${bin}" "$@" >/dev/null 2>&1; then
+        item PASS "${name}" "verify passed (${bin} $*)"
+        return 0
+    fi
+
+    item DRIFT "${name}" "verify failed (${bin} $*)" \
+        "${bin##*/} --apply --target ${TARGET_SCOPE} — this installer never converges the layout itself, and refuses to mutate until it is correct"
+}
+
 report_child_gate() {
     local name="$1" bin="$2"
     shift 2
@@ -1002,7 +1150,11 @@ enabled_link_state() {
 report_managed_files() {
     section "MANAGED SERVICE FILES (directly owned by this slice)"
 
-    report_managed_file "SSH deploy restriction" "${SRC_SSH_RESTRICTION}" "${DST_SSH_RESTRICTION}"
+    # Host-wide: one file governing every deploy account on the machine. A
+    # target-scoped run neither reports it as its own nor rewrites it.
+    if ! target_scoped; then
+        report_managed_file "SSH deploy restriction" "${SRC_SSH_RESTRICTION}" "${DST_SSH_RESTRICTION}"
+    fi
 
     local target_id
     for target_id in "${ACTIVE_TARGETS[@]}"; do
@@ -1078,28 +1230,80 @@ service_active() {
     "${SYSTEMCTL_BIN}" is-active --quiet "$1" >/dev/null 2>&1
 }
 
+# target_file_drifted DST SRC — the selected target's own copy of one managed
+# file is absent, not a regular file, or differs from what is committed.
+target_file_drifted() {
+    local dst="$1" src="$2" phys
+    phys="$(physical "${dst}")"
+
+    [[ -f "${phys}" ]] || return 0
+    cmp -s "${src}" "${phys}" || return 0
+
+    return 1
+}
+
+# report_parser_result NAME DETAIL DRIFTED — one authoritative parser's verdict.
+#
+# A failing parser is normally a CONFLICT: nothing may be reloaded until a human
+# fixes the configuration. In target mode there is one case where that is the
+# wrong answer, and it is a case this operation exists for — the selected
+# target's OWN managed file is drifted or damaged, and the parser is failing
+# BECAUSE of it. Replacing that file with the committed one is the repair, and
+# the parser is re-run against the candidate before anything is reloaded, so
+# nothing is installed on the strength of this guess.
+#
+# When the selected target's files are already byte-identical to what is
+# committed, a parser failure is somewhere else on the host and stays a
+# CONFLICT: converging this target would change nothing and fix nothing.
+report_parser_result() {
+    local name="$1" detail="$2" drifted="$3"
+
+    if ! target_scoped || [[ "${drifted}" != true ]]; then
+        item CONFLICT "${name}" "${detail}" \
+            "fix the installed configuration (apply installs candidates transactionally, validates them, and restores on a failed test)"
+        return 0
+    fi
+
+    item DRIFT "${name}" "${detail}; this target's own configuration is drifted, which is the likely cause" \
+        "replace this target's committed configuration transactionally — the parser is re-run against the candidate before any reload, and a candidate that does not parse is restored"
+}
+
 report_config_validation() {
     section "CONFIG VALIDATION (authoritative parsers, read-only)"
+
+    local nginx_drift=false fpm_drift=false supervisor_drift=false
+
+    if target_scoped; then
+        target_file_drifted "$(dst_nginx_site "${TARGET_SCOPE}")" "$(src_nginx_site "${TARGET_SCOPE}")" && nginx_drift=true
+        [[ "$(enabled_link_state "${TARGET_SCOPE}")" == ok ]] || nginx_drift=true
+        target_file_drifted "$(dst_fpm_pool "${TARGET_SCOPE}")" "$(src_fpm_pool "${TARGET_SCOPE}")" && fpm_drift=true
+        target_file_drifted "$(dst_supervisor "${TARGET_SCOPE}")" "$(src_supervisor "${TARGET_SCOPE}")" && supervisor_drift=true
+    fi
 
     if nginx_config_test; then
         item PASS "config-test:nginx" "nginx -t passed against the installed configuration"
     else
-        item CONFLICT "config-test:nginx" "nginx -t failed against the installed configuration" \
-            "fix the installed Nginx configuration (apply installs candidates transactionally and restores on a failed test)"
+        report_parser_result "config-test:nginx" \
+            "nginx -t failed against the installed configuration" "${nginx_drift}"
     fi
 
-    if sshd_config_test; then
-        item PASS "config-test:sshd" "sshd -t passed against the installed configuration"
-    else
-        item CONFLICT "config-test:sshd" "sshd -t failed against the installed configuration" \
-            "fix the installed SSH configuration before any reload"
+    # SSH belongs to the host run. A target-scoped repair never installs or
+    # reloads it, so validating it here would report a problem this run has no
+    # business fixing.
+    if ! target_scoped; then
+        if sshd_config_test; then
+            item PASS "config-test:sshd" "sshd -t passed against the installed configuration"
+        else
+            item CONFLICT "config-test:sshd" "sshd -t failed against the installed configuration" \
+                "fix the installed SSH configuration before any reload"
+        fi
     fi
 
     if php_fpm_config_test; then
         item PASS "config-test:php-fpm" "${PHP_FPM_TEST_BIN##*/} -t passed against the installed configuration"
     else
-        item CONFLICT "config-test:php-fpm" "${PHP_FPM_TEST_BIN##*/} -t failed against the installed configuration" \
-            "fix the installed PHP-FPM configuration before any reload"
+        report_parser_result "config-test:php-fpm" \
+            "${PHP_FPM_TEST_BIN##*/} -t failed against the installed configuration" "${fpm_drift}"
     fi
 
     if ! service_active supervisor; then
@@ -1108,8 +1312,8 @@ report_config_validation() {
     elif supervisor_reread_validation; then
         item PASS "config-test:supervisor" "supervisorctl reread parsed the installed configuration cleanly (validation only — nothing applied)"
     else
-        item CONFLICT "config-test:supervisor" "supervisorctl reread reported a configuration error" \
-            "fix the installed Supervisor configuration"
+        report_parser_result "config-test:supervisor" \
+            "supervisorctl reread reported a configuration error" "${supervisor_drift}"
     fi
 }
 
@@ -1118,13 +1322,29 @@ report_config_validation() {
 report_child_contracts() {
     section "CHILD INSTALLER CONTRACTS (authoritative owners — never absorbed)"
 
-    report_child_state "operations:install-target-operations" \
-        "runtime registry, deployment.conf and the installed operational bundle" \
-        "${OPERATIONS_INSTALLER_BIN}" --verify
+    # Host-wide children, converged here through their own --apply.
+    #
+    # A target-scoped run reports NEITHER of them, and the reason is a
+    # dependency that only becomes visible from inside a repair:
+    # install-target-operations --verify runs the application health check on
+    # a DEPLOYED target and fails when the site does not answer. A broken
+    # Nginx vhost or PHP-FPM pool is exactly the damage a target repair exists
+    # to fix, so gating that repair on this verify would mean the site has to
+    # be healthy before it can be made healthy.
+    #
+    # Neither family is a prerequisite of converging one target's service
+    # configuration in the first place — they install the host's operational
+    # CLI bundle and its sudo perimeter — so they belong to the host bootstrap
+    # exactly like mail capture and the SSH restriction below.
+    if ! target_scoped; then
+        report_child_state "operations:install-target-operations" \
+            "runtime registry, deployment.conf and the installed operational bundle" \
+            "${OPERATIONS_INSTALLER_BIN}" --verify
 
-    report_child_state "perimeter:install-target-perimeter" \
-        "generic sudo wrappers, sudoers, backup cron, legacy-wrapper absence" \
-        "${PERIMETER_INSTALLER_BIN}" --verify
+        report_child_state "perimeter:install-target-perimeter" \
+            "generic sudo wrappers, sudoers, backup cron, legacy-wrapper absence" \
+            "${PERIMETER_INSTALLER_BIN}" --verify
+    fi
 
     local target_id
     for target_id in "${ACTIVE_TARGETS[@]}"; do
@@ -1138,9 +1358,13 @@ report_child_contracts() {
     # would make this installer's --check/--verify — and bootstrap-host's,
     # which delegates to them — mutating. The full acceptance run is an
     # explicit operator command, never ordinary bootstrap verification.
-    report_child_state "mail-capture:verify-mail-capture" \
-        "shared-host-service Mailpit/Mailtrap Local (never per-target; read-only probe)" \
-        "${VERIFY_MAIL_CAPTURE_BIN}" --read-only
+    # Mail capture is a shared host service with no per-target component at
+    # all. A target-scoped run has nothing to say about it.
+    if ! target_scoped; then
+        report_child_state "mail-capture:verify-mail-capture" \
+            "shared-host-service Mailpit/Mailtrap Local (never per-target; read-only probe)" \
+            "${VERIFY_MAIL_CAPTURE_BIN}" --read-only
+    fi
 }
 
 # report_child_state NAME LABEL BIN ARGS... — a failing child contract is
@@ -1276,12 +1500,19 @@ report_services() {
 
     local unit
     for unit in "${BASE_SERVICES[@]}"; do
-        report_service_state "${unit}" "base host service"
+        if target_scoped; then
+            report_service_prerequisite "${unit}"
+        else
+            report_service_state "${unit}" "base host service"
+        fi
     done
 
-    for unit in "${MAIL_SERVICES[@]}"; do
-        report_service_state "${unit}" "shared-host-service (owned by install-mail-capture)"
-    done
+    # Shared mail capture has no per-target component.
+    if ! target_scoped; then
+        for unit in "${MAIL_SERVICES[@]}"; do
+            report_service_state "${unit}" "shared-host-service (owned by install-mail-capture)"
+        done
+    fi
 
     local target_id
     for target_id in "${ACTIVE_TARGETS[@]}"; do
@@ -1323,6 +1554,35 @@ report_nginx_worker_groups() {
         "reload nginx (never restart) after nginx -t passes, so replacement workers pick up the group"
 }
 
+# report_service_prerequisite UNIT — the target-mode view of a base host
+# service. A target cannot be healthy while nginx, PHP-FPM, Supervisor,
+# PostgreSQL or Redis is down, so this still blocks; enabling or starting one is
+# a host decision and never happens here.
+report_service_prerequisite() {
+    local unit="$1"
+
+    # BOTH halves, deliberately. Checking only `is-active` let an
+    # active-but-disabled unit report PASS, and the convergence below would
+    # then quietly `systemctl enable` it — a host-level mutation a
+    # target-scoped run must never make. A prerequisite that is not checked is
+    # not a boundary, it is a comment.
+    local active=false enabled=false
+    service_active "${unit}" && active=true
+    service_enabled "${unit}" && enabled=true
+
+    if [[ "${active}" == true ]] && [[ "${enabled}" == true ]]; then
+        item PASS "service:${unit}" "active and enabled (base host service; host-owned, never enabled or started by a target-scoped run)"
+        return 0
+    fi
+
+    local state="not active"
+    [[ "${active}" == true ]] && state="active but not enabled"
+    [[ "${enabled}" == true ]] && [[ "${active}" != true ]] && state="enabled but not active"
+
+    item HOST-REQ "service:${unit}" "${state} (base host service)" \
+        "enable and start it as a host operation — a target-scoped run never enables or starts a base service"
+}
+
 report_service_state() {
     local unit="$1" label="$2"
     local enabled=false active=false
@@ -1347,19 +1607,37 @@ report_service_state() {
 report_summary() {
     section "SUMMARY"
 
-    printf 'Bootstrap services installer (%s):\n' "${MODE}"
+    if target_scoped; then
+        printf 'Bootstrap services installer (%s, target %s):\n' "${MODE}" "${TARGET_SCOPE}"
+    else
+        printf 'Bootstrap services installer (%s):\n' "${MODE}"
+    fi
+
     printf 'PASS: %d\n' "${COUNT_PASS}"
     printf 'MISSING: %d\n' "${COUNT_MISSING}"
     printf 'DRIFT: %d\n' "${COUNT_DRIFT}"
     printf 'WARN: %d\n' "${COUNT_WARN}"
     printf 'CONFLICT: %d\n' "${COUNT_CONFLICT}"
     printf 'DEFERRED: %d\n' "${COUNT_DEFERRED}"
+
+    if target_scoped; then
+        printf 'HOST-REQ: %d\n' "${COUNT_HOST_REQ}"
+    fi
+
     printf '\n'
 
     if contract_satisfied; then
-        printf 'SLICE 5.4 CONTRACT: SATISFIED\n'
+        if target_scoped; then
+            printf 'TARGET SERVICES CONTRACT (%s): SATISFIED\n' "${TARGET_SCOPE}"
+        else
+            printf 'SLICE 5.4 CONTRACT: SATISFIED\n'
+        fi
     else
-        printf 'SLICE 5.4 CONTRACT: NOT SATISFIED\n'
+        if target_scoped; then
+            printf 'TARGET SERVICES CONTRACT (%s): NOT SATISFIED\n' "${TARGET_SCOPE}"
+        else
+            printf 'SLICE 5.4 CONTRACT: NOT SATISFIED\n'
+        fi
     fi
 }
 
@@ -1368,12 +1646,17 @@ report_summary() {
 # always do — DEFERRED is never used to hide a genuine conflict, which keeps
 # its own status.
 contract_satisfied() {
-    (( COUNT_MISSING == 0 )) && (( COUNT_CONFLICT == 0 )) && (( COUNT_DRIFT == 0 ))
+    (( COUNT_MISSING == 0 )) && (( COUNT_CONFLICT == 0 )) && (( COUNT_DRIFT == 0 )) \
+        && (( COUNT_HOST_REQ == 0 ))
 }
 
 run_contract_report() {
     printf 'RateGuru bootstrap services installer (%s mode)\n' "${MODE}"
     printf 'Coordinates: target operations, perimeter, public-storage ACL, mail capture; directly owns the active-target service files\n'
+
+    if target_scoped; then
+        printf 'Scope: target %s only — host-wide families are out of scope entirely; base services are inspected and never started\n' "${TARGET_SCOPE}"
+    fi
 
     report_prerequisite_slices
     report_targets
@@ -1717,6 +2000,35 @@ ensure_support_directory() {
 # restart the idempotency contract forbids.
 SERVICE_STARTED_NOW=false
 
+# assert_base_service_available UNIT — the target-mode counterpart of
+# ensure_service_enabled_active.
+#
+# Same question, no answer of its own: a base service that is not already
+# enabled and active fails the run rather than being enabled or started.
+# apply_gate_base_services proves this before the first mutation, so reaching a
+# failure here means the unit changed underneath a held lock.
+assert_base_service_available() {
+    local unit="$1"
+    SERVICE_STARTED_NOW=false
+
+    service_enabled "${unit}" \
+        || fail "base host service ${unit} is not enabled — a target-scoped run never enables one; enable it as a host operation"
+
+    service_active "${unit}" \
+        || fail "base host service ${unit} is not active — a target-scoped run never starts one; start it as a host operation"
+}
+
+# ensure_base_service UNIT — the one call site vocabulary. Host mode converges
+# the unit; target mode asserts it and never touches it.
+ensure_base_service() {
+    if target_scoped; then
+        assert_base_service_available "$1"
+        return 0
+    fi
+
+    ensure_service_enabled_active "$1"
+}
+
 ensure_service_enabled_active() {
     local unit="$1"
     SERVICE_STARTED_NOW=false
@@ -1780,7 +2092,7 @@ converge_php_fpm() {
     php_fpm_config_test \
         || fail "PHP-FPM configuration test failed with the candidate pool installed — restoring the previous configuration (no reload was performed)"
 
-    ensure_service_enabled_active "${PHP_FPM_SERVICE}"
+    ensure_base_service "${PHP_FPM_SERVICE}"
 
     if [[ "${changed}" == true ]] && [[ "${SERVICE_STARTED_NOW}" != true ]]; then
         reload_service "${PHP_FPM_SERVICE}"
@@ -1908,7 +2220,7 @@ converge_nginx_service() {
             action "Nginx sites already byte-identical and enabled, and workers already carry every active code group — no reload needed"
         fi
 
-        ensure_service_enabled_active nginx
+        ensure_base_service nginx
     else
         # A clean host: enable and start only after the configuration
         # validated. Unrelated sites (including the distro default) are
@@ -1916,7 +2228,7 @@ converge_nginx_service() {
         # or the start itself and is reported, not resolved by inventing
         # cleanup policy here. A freshly started master spawns workers that
         # already carry the current group set.
-        ensure_service_enabled_active nginx
+        ensure_base_service nginx
     fi
 
     local target_id
@@ -1959,7 +2271,7 @@ converge_supervisor() {
     # autostart=true program whose directory=current does not exist yet —
     # the exact restart/failure loop the PRE_DEPLOY contract exists to
     # prevent. Reread/update below never runs in PRE_DEPLOY state.
-    ensure_service_enabled_active supervisor
+    ensure_base_service supervisor
 
     install_managed_file_if_needed "$(src_supervisor "${target_id}")" "$(dst_supervisor "${target_id}")"
     local changed="${FILE_CHANGED}"
@@ -2105,15 +2417,56 @@ converge_mail_capture() {
 # re-implemented. bootstrap-host-preflight is deliberately NOT a
 # prerequisite: 5.4 is exactly the slice that creates much of what preflight
 # expects, so preflight gating here would deadlock a clean host.
+# apply_gate_base_services — target mode only. Every base host service this run
+# may not enable or start must already be enabled and active, proven BEFORE the
+# first mutation.
+#
+# The report already says so, but a report is a read at one instant and an apply
+# is a sequence of writes after it. Without this gate a unit stopped between the
+# two would be met by a convergence function that starts it, which is exactly
+# the host-level mutation a target-scoped run must never make.
+apply_gate_base_services() {
+    target_scoped || return 0
+
+    local failures=() unit
+    for unit in "${BASE_SERVICES[@]}"; do
+        service_enabled "${unit}" \
+            || { failures+=("${unit} is not enabled"); continue; }
+
+        service_active "${unit}" \
+            || failures+=("${unit} is not active")
+    done
+
+    if (( ${#failures[@]} > 0 )); then
+        local failure
+        for failure in "${failures[@]}"; do
+            printf 'HOST-REQ %s\n' "${failure}" >&2
+        done
+
+        fail "refusing to apply --target ${TARGET_SCOPE}: ${#failures[@]} base host service(s) are not enabled and active, and a target-scoped run never enables or starts one. Enable and start them as a host operation. No mutation was performed"
+    fi
+}
+
 apply_gate_prerequisites() {
     action "prerequisite gate: install-bootstrap-runtime --verify (slice 5.2)"
     "${RUNTIME_INSTALLER_BIN}" --verify >/dev/null 2>&1 \
         || fail "install-bootstrap-runtime --verify failed — converge slice 5.2 first (no service/config mutation was performed)"
 
-    action "prerequisite gate: install-bootstrap-host-layout --verify (slice 5.3)"
-    "${HOSTLAYOUT_INSTALLER_BIN}" --verify >/dev/null 2>&1 \
-        || fail "install-bootstrap-host-layout --verify failed — converge slice 5.3 first (no service/config mutation was performed)"
+    # In target mode the layout gate is asked the same question at the same
+    # scope. Demanding the WHOLE host layout here would make repairing one
+    # target fail because a different active target had drifted — which is
+    # both wrong and the opposite of what target scoping is for.
+    if target_scoped; then
+        action "prerequisite gate: install-bootstrap-host-layout --verify --target ${TARGET_SCOPE}"
+        "${HOSTLAYOUT_INSTALLER_BIN}" --verify --target "${TARGET_SCOPE}" >/dev/null 2>&1 \
+            || fail "install-bootstrap-host-layout --verify --target ${TARGET_SCOPE} failed — converge this target's layout first (no service/config mutation was performed)"
+    else
+        action "prerequisite gate: install-bootstrap-host-layout --verify (slice 5.3)"
+        "${HOSTLAYOUT_INSTALLER_BIN}" --verify >/dev/null 2>&1 \
+            || fail "install-bootstrap-host-layout --verify failed — converge slice 5.3 first (no service/config mutation was performed)"
+    fi
 }
+
 
 apply_gate_destinations() {
     require_real_directory "${DST_NGINX_AVAILABLE_DIR}" "Nginx sites-available (installed by slice 5.2 packages)"
@@ -2121,13 +2474,28 @@ apply_gate_destinations() {
     require_real_directory "${DST_PHP_FPM_POOL_DIR}" "PHP-FPM pool directory (installed by slice 5.2 packages)"
     require_real_directory "${DST_SUPERVISOR_DIR}" "Supervisor conf.d (installed by slice 5.2 packages)"
     require_real_directory "${DST_CRON_DIR}" "cron.d"
-    require_real_directory "${DST_SSHD_DIR}" "sshd_config.d"
 
     local target_id logical phys
-    phys="$(physical "${DST_SSH_RESTRICTION}")"
-    [[ -L "${phys}" ]] && fail "destination is a symlink: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
-    if [[ -e "${phys}" ]] && [[ ! -f "${phys}" ]]; then
-        fail "destination exists but is not a regular file: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+
+    # The SSH deploy restriction, and the directory it lives in, are gated only
+    # in host mode — the one mode that installs them.
+    #
+    # A target-scoped run neither reports, verifies nor converges that file, so
+    # demanding a well-formed destination for it made a target repair depend on
+    # host configuration it never touches: a damaged sshd_config.d entry,
+    # invisible in the target-mode report, would abort the apply. In
+    # combination with layout drift that is worse than an unhelpful error, it
+    # breaks the contract this whole gate exists for — every blocker known
+    # before the first mutation — because the layout would already have been
+    # converged by then.
+    if ! target_scoped; then
+        require_real_directory "${DST_SSHD_DIR}" "sshd_config.d"
+
+        phys="$(physical "${DST_SSH_RESTRICTION}")"
+        [[ -L "${phys}" ]] && fail "destination is a symlink: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+        if [[ -e "${phys}" ]] && [[ ! -f "${phys}" ]]; then
+            fail "destination exists but is not a regular file: ${DST_SSH_RESTRICTION} — resolve manually before --apply"
+        fi
     fi
 
     for target_id in "${ACTIVE_TARGETS[@]}"; do
@@ -2163,6 +2531,7 @@ perform_apply() {
 
     # 1-2. Authoritative earlier-slice gates.
     apply_gate_prerequisites
+    apply_gate_base_services
 
     # 3. Source registry / lifecycle boundary + committed service sources.
     classify_all_target_states gate
@@ -2190,13 +2559,20 @@ perform_apply() {
         ensure_support_directory "${target_id}"
     done
 
-    # 6-7. Operations bundle, then perimeter (perimeter verifies the
-    # installed bundle, so the order is a hard dependency).
-    converge_target_operations
-    converge_target_perimeter
-
-    # 8. SSH restriction (validated before any reload).
-    converge_ssh_restriction
+    # 6-8. Host-wide families: the operations bundle, the perimeter and the
+    # SSH restriction. Owned by the host run only.
+    #
+    # A target-scoped repair must never rewrite the host's operational bundle,
+    # its sudo perimeter or its SSH policy — those belong to every target at
+    # once, and "one target drifted" is never a reason to reinstall them. In
+    # target mode they are neither reported nor verified nor touched: see the
+    # note in report_child_contracts on why verifying the operations bundle
+    # from inside a repair is circular.
+    if ! target_scoped; then
+        converge_target_operations
+        converge_target_perimeter
+        converge_ssh_restriction
+    fi
 
     # 9. PHP-FPM pool (validated, enabled, socket verified) — healthy before
     # Nginx runtime verification ever depends on it.
@@ -2229,20 +2605,26 @@ perform_apply() {
         converge_public_storage_access "${target_id}"
     done
 
-    # 14. Shared mail capture.
-    converge_mail_capture
+    # 14-15. Shared mail capture and base service enablement. Host-wide, and
+    # for the same reason: mail capture is shared by every target, and
+    # enabling PostgreSQL or Redis is a host decision. A target-scoped run
+    # verifies them as prerequisites and changes neither.
+    if ! target_scoped; then
+        converge_mail_capture
 
-    # 15. Remaining base services (nginx/php-fpm/supervisor already handled
-    # inside their config steps; PostgreSQL/Redis get service enablement
-    # only — never databases, roles or auth/network configuration).
-    ensure_service_enabled_active postgresql
-    ensure_service_enabled_active redis-server
+        ensure_service_enabled_active postgresql
+        ensure_service_enabled_active redis-server
+    fi
 
     APPLY_COMMITTED=true
     trap - ERR EXIT
 
     # 16-17. Authoritative closing verification.
-    action "apply finished — running the full slice 5.4 verification"
+    if target_scoped; then
+        action "apply finished — running the full verification for target ${TARGET_SCOPE}"
+    else
+        action "apply finished — running the full slice 5.4 verification"
+    fi
 
     MODE=verify
     run_contract_report
@@ -2267,6 +2649,20 @@ parse_args() {
                 MODE="${1#--}"
                 MODE_SEEN=true
                 shift
+                ;;
+            --target)
+                if [[ -n "${TARGET_SCOPE}" ]]; then
+                    usage >&2
+                    fail "--target given more than once"
+                fi
+
+                if [[ $# -lt 2 ]] || [[ -z "${2-}" ]] || [[ "${2-}" == -* ]]; then
+                    usage >&2
+                    fail "--target requires a target ID"
+                fi
+
+                TARGET_SCOPE="$2"
+                shift 2
                 ;;
             --help|-h)
                 usage

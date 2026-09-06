@@ -290,9 +290,19 @@ exists and was already correctly labelled.
 | `--resume` | fails | `restore-target`'s existing `failed-held` semantics own the safety |
 | observability marker | warning only | unaffected — the recovery itself succeeded |
 
-After any failure that leaves the target held, the way back in is always the
-same: **Restore staging / Restore production, `mode=continue-held`, with the
-operation ID.**
+After a failure that leaves the target held with `guard.status = held`, the way
+back in is always the same: **Restore staging / Restore production,
+`mode=continue-held`, with the operation ID.** Every row above except the last
+one leaves exactly that state.
+
+`failed-held` is NOT one of those, and `continue-held` will refuse it — see
+condition 3 in the list above. That status means a restore failed while the live
+data may already have been replaced, so which data state is authoritative is a
+decision only an operator can make. It ends in the `MANUAL RECOVERY REQUIRED`
+block `restore-target` prints, with the emergency backup named there, and the
+guard is cleared by hand as the last step of that recovery. Neither a repair nor
+a deployment is a way out of it: `repair-target` refuses a target under any
+restore guard, and `deploy`, `rollback`, `backup` and `cleanup` refuse it too.
 
 ## Production
 

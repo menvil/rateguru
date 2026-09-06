@@ -173,17 +173,10 @@ it('implements no Restore operation', function () {
     }
 });
 
-it('implements no Repair operation', function () {
-    foreach ([
-        'infrastructure/scripts/repair-target',
-        '.github/workflows/repair-staging.yml',
-        '.github/actions/repair-rateguru/action.yml',
-    ] as $path) {
-        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to Phase 7.5, not 7.2");
-    }
-
-    // Drift is reported and fails closed; it is never reconciled. That
-    // distinction is what keeps Repair a separate phase.
+it('reports drift and fails closed rather than reconciling it', function () {
+    // Host preparation reports drift and refuses; it never reconciles it.
+    // That distinction is what keeps repair a separate operation with its own
+    // interlocks, rather than a side effect of preparing a host.
     expect(File::get(base_path('infrastructure/scripts/install-target-database')))
         ->toContain('resolve the mismatch manually');
     expect(File::get(base_path('infrastructure/scripts/install-target-prerequisites')))

@@ -67,6 +67,9 @@ it('has exactly one build, one deploy and one rollback implementation', function
         // never a per-environment fork of any of them.
         'prepare-rateguru-host',
         'record-rateguru-deployment',
+        // One REPAIR implementation, covering both environments. Transport
+        // only: it carries no material and cannot deploy, restore or prepare.
+        'repair-rateguru-target',
         // Phase 7.4's one addition: one RESTORE implementation, covering all
         // three of its modes and both environments.
         'restore-rateguru',
@@ -84,6 +87,10 @@ it('keeps one operator-facing workflow per environment, with no target selector 
         'prepare-production-host.yml',
         'prepare-staging-host.yml',
         'release.yml',
+        // One repair workflow per environment, exactly like every other
+        // operator-facing operation here.
+        'repair-production.yml',
+        'repair-staging.yml',
         // Phase 7.4: one restore workflow per environment, exactly like every
         // other operator-facing operation here.
         'restore-production.yml',
@@ -264,16 +271,12 @@ it('implements nothing from Phase 7.5 onwards', function () {
     // Prepare Host landed in Phase 7.2, Restore Target Data in 7.3 and the
     // GitHub restore surface with controlled code alignment in 7.4; each has
     // its own scope guard (Phase72ScopeTest, Phase73ScopeTest,
-    // Phase74ScopeTest). Repair and Recover remain future work, and nothing
-    // may ship an implementation of either.
+    // Phase74ScopeTest), and target-scoped repair followed. Recover remains
+    // future work, and nothing may ship an implementation of it.
     foreach ([
-        'infrastructure/scripts/repair-target',
         'infrastructure/scripts/recover-host',
-        '.github/workflows/repair-staging.yml',
-        '.github/workflows/repair-production.yml',
         '.github/workflows/recover-staging.yml',
         '.github/workflows/recover-production.yml',
-        '.github/actions/repair-rateguru/action.yml',
         '.github/actions/recover-rateguru-host/action.yml',
     ] as $futureWork) {
         expect(File::exists(base_path($futureWork)))
@@ -364,6 +367,10 @@ it('serializes every mutation of the same target in the GitHub orchestration lay
         'restore-production.yml:align' => ['tits-guru', 'rateguru-production-release'],
         'restore-production.yml:resume' => ['tits-guru', 'rateguru-production-release'],
         'restore-production.yml:observability' => ['tits-guru', 'rateguru-production-release'],
+        // A repair converges the infrastructure a release runs inside, so it
+        // shares the domain of every other mutation of that target.
+        'repair-staging.yml:repair' => ['staging-main', 'rateguru-staging-deployment'],
+        'repair-production.yml:repair' => ['tits-guru', 'rateguru-production-release'],
     ];
 
     $found = [];
@@ -400,7 +407,9 @@ it('serializes every mutation of the same target in the GitHub orchestration lay
         ->and($groups['prepare-staging-host.yml'])->toBe($groups['deploy-staging.yml'])
         ->and($groups['prepare-production-host.yml'])->toBe($groups['release.yml'])
         ->and($groups['restore-staging.yml'])->toBe($groups['deploy-staging.yml'])
-        ->and($groups['restore-production.yml'])->toBe($groups['release.yml']);
+        ->and($groups['restore-production.yml'])->toBe($groups['release.yml'])
+        ->and($groups['repair-staging.yml'])->toBe($groups['deploy-staging.yml'])
+        ->and($groups['repair-production.yml'])->toBe($groups['release.yml']);
 
     // ...and GitHub concurrency never replaced the server-side lock.
     expect(File::get(base_path('infrastructure/scripts/common')))->toContain('flock');

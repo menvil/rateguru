@@ -73,6 +73,17 @@ infrastructure, and moves out once a second project exists.
   back. There is no target dropdown and no commit input: the operator chooses
   a backup, and the server decides the commit — see
   [`runbooks/github-restore.md`](runbooks/github-restore.md);
+- target-scoped repair: `infrastructure/scripts/repair-target`, the optional
+  `--target` mode both bootstrap installers gained, the
+  `.github/actions/repair-rateguru-target` transport and the `Repair staging
+  target` / `Repair production target` workflows. When the host is healthy and
+  only one target's own infrastructure has drifted, it converges that target
+  back onto what is committed and proves afterwards that the release, the
+  rollback pointer, `shared/.env` and the shared-storage structure are
+  unchanged. It is orchestration only — every convergence is delegated to the
+  installer that owns the contract — and it carries no secret material at all,
+  runs no migration and never touches the database or the code — see
+  [`runbooks/repair-target.md`](runbooks/repair-target.md);
 - shared staging mail capture (Mailpit + Mailtrap Local) — see
   [`runbooks/mail-capture.md`](runbooks/mail-capture.md);
 - Nginx configuration;

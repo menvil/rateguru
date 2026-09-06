@@ -1891,10 +1891,10 @@ inspect_diagnose_unalignable_hold() {
 
     case "${guard_status}" in
         in-progress)
-            fail "${TARGET_ID} is held by restore operation ${guard_operation:-<unknown>} with status 'in-progress': a restore either is still running or was killed between activating the data and finishing. It is NOT a code-alignment hold, and continuing the alignment flow against it is unsafe — no build, no deployment and no --resume. Read ${marker} and the operation's own state, and recover it by hand (Repair Target is Phase 7.5)"
+            fail "${TARGET_ID} is held by restore operation ${guard_operation:-<unknown>} with status 'in-progress': a restore either is still running or was killed between activating the data and finishing. It is NOT a code-alignment hold, and continuing the alignment flow against it is unsafe — no build, no deployment and no --resume. Read ${marker} and the operation's own state, and recover it by hand. Repair Target is not a way out either: it refuses a target under any restore guard, precisely because this state is a data decision and not an infrastructure one"
             ;;
         failed-held)
-            fail "${TARGET_ID} is held by restore operation ${guard_operation:-<unknown>} with status 'failed-held': a restore failed leaving live data that may already have been replaced. It is NOT a code-alignment hold, and continuing the alignment flow against it is unsafe — no build, no deployment and no --resume. The operation's own MANUAL RECOVERY REQUIRED report names the failed step, the compensation status and the emergency backup; recover it by hand (Repair Target is Phase 7.5)"
+            fail "${TARGET_ID} is held by restore operation ${guard_operation:-<unknown>} with status 'failed-held': a restore failed leaving live data that may already have been replaced. It is NOT a code-alignment hold, and continuing the alignment flow against it is unsafe — no build, no deployment and no --resume. The operation's own MANUAL RECOVERY REQUIRED report names the failed step, the compensation status and the emergency backup; recover it by hand. Repair Target is not a way out either: it refuses a target under any restore guard, precisely because this state is a data decision and not an infrastructure one"
             ;;
     esac
 }

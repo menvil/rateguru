@@ -208,10 +208,48 @@ fail() {
 MODE=""
 MODE_SEEN=false
 
+# --- Target scope -------------------------------------------------------------
+#
+# Empty is the host bootstrap this installer has always been: every active
+# target in the registry, plus the host roots they live in.
+#
+# Set by --target, it narrows the SAME contract to one target — the identities,
+# memberships and directory entries that belong to it — and turns the host roots
+# into read-only prerequisites. Nothing about the contract changes; only how much
+# of it this run is responsible for. There is deliberately no second
+# implementation of any check or convergence for target mode to use.
+TARGET_SCOPE=""
+
+target_scoped() {
+    [[ -n "${TARGET_SCOPE}" ]]
+}
+
 COUNT_PASS=0
 COUNT_MISSING=0
 COUNT_WARN=0
 COUNT_CONFLICT=0
+
+# HOST-REQ ("host prerequisite") is only ever non-zero in target mode: a
+# host-level directory this run may inspect but must never create or re-own. It
+# blocks like a CONFLICT, because a target cannot be converged on a host that is
+# not there — but it says plainly that the fix is a host operation, not this one.
+#
+# Eight characters on purpose: the report is a fixed-width table whose exact
+# spacing is part of this installer's asserted output contract.
+# DRIFT is only ever non-zero in target mode: a managed directory that exists
+# and is a directory, but carries the wrong owner, group or mode.
+#
+# In host mode that stays a CONFLICT, unchanged. In target mode it is the single
+# most common thing a repair is asked to fix, and this installer already fixes
+# it safely — ensure_directory chowns and chmods the entry itself and never
+# recurses. Calling it a conflict told an orchestrator "no one may fix this
+# automatically", which is the opposite of true.
+#
+# A wrong TYPE — a symlink or a file where a directory belongs — stays a
+# CONFLICT in both modes: resolving that would mean deleting something.
+COUNT_DRIFT=0
+
+COUNT_HOST_REQ=0
 
 section() {
     printf '\n%s\n' "$1"
@@ -229,8 +267,10 @@ item() {
     case "${status}" in
         PASS)     COUNT_PASS=$((COUNT_PASS + 1)) ;;
         MISSING)  COUNT_MISSING=$((COUNT_MISSING + 1)) ;;
+        DRIFT)    COUNT_DRIFT=$((COUNT_DRIFT + 1)) ;;
         WARN)     COUNT_WARN=$((COUNT_WARN + 1)) ;;
         CONFLICT) COUNT_CONFLICT=$((COUNT_CONFLICT + 1)) ;;
+        HOST-REQ) COUNT_HOST_REQ=$((COUNT_HOST_REQ + 1)) ;;
         *)        fail "internal: unknown item status: ${status}" ;;
     esac
 
@@ -252,9 +292,20 @@ Usage:
   install-bootstrap-host-layout --check
   install-bootstrap-host-layout --apply
   install-bootstrap-host-layout --verify
+
+  install-bootstrap-host-layout --check  --target TARGET_ID
+  install-bootstrap-host-layout --apply  --target TARGET_ID
+  install-bootstrap-host-layout --verify --target TARGET_ID
+
   install-bootstrap-host-layout --help
 
 All modes require root.
+
+  --target  Narrow the SAME contract to one active target: its identities,
+            its code-group memberships and its own directory entries. The
+            host roots are inspected as prerequisites and never created or
+            re-owned, and no other target is read or touched. Without it,
+            this installer is exactly the host bootstrap it has always been.
 
   --check   Read-only slice 5.3 contract validation plus the intended
             --apply action for every unsatisfied item. Validates the source
@@ -459,6 +510,38 @@ load_source_contract() {
     done < <(jq -r '.targets | keys[]' "${SOURCE_REGISTRY}" | sort)
 
     validate_target_contract
+    narrow_to_target_scope
+}
+
+# narrow_to_target_scope — in target mode, reduce the loaded contract to the one
+# requested target after the WHOLE registry has been validated.
+#
+# Order matters: the registry is validated in full first, so a target-scoped run
+# still refuses a registry that is inconsistent anywhere. Only then is the scope
+# narrowed, and every report and convergence below runs unchanged over the
+# shorter list.
+narrow_to_target_scope() {
+    target_scoped || return 0
+
+    local known=false target_id
+    for target_id in "${ACTIVE_TARGETS[@]}"; do
+        [[ "${target_id}" == "${TARGET_SCOPE}" ]] && known=true
+    done
+
+    if [[ "${known}" != true ]]; then
+        for target_id in "${PLANNED_TARGETS[@]}"; do
+            if [[ "${target_id}" == "${TARGET_SCOPE}" ]]; then
+                fail "target ${TARGET_SCOPE} is lifecycle=planned — this installer never provisions a planned target, in host mode or target mode"
+            fi
+        done
+
+        fail "unknown target: ${TARGET_SCOPE} — not present in ${SOURCE_REGISTRY}"
+    fi
+
+    ACTIVE_TARGETS=("${TARGET_SCOPE}")
+
+    # Nothing is reported about targets this run is not responsible for.
+    PLANNED_TARGETS=()
 }
 
 # validate_target_contract — this installer's own defense in depth on top
@@ -668,8 +751,14 @@ report_directory() {
         return 0
     fi
 
+    # Ownership and mode are converged by --apply on the entry itself, so in
+    # target mode they are drift with a named fix rather than a conflict. See
+    # the COUNT_DRIFT note above for why the distinction matters.
+    local remediable=CONFLICT
+    target_scoped && remediable=DRIFT
+
     if [[ "${actual_owner}" != "${owner}" ]] || [[ "${actual_group}" != "${group}" ]]; then
-        item CONFLICT "path:${path}" "owned by ${actual_owner}:${actual_group}, required ${owner}:${group} (${label})" \
+        item "${remediable}" "path:${path}" "owned by ${actual_owner}:${actual_group}, required ${owner}:${group} (${label})" \
             "chown ${owner}:${group} on this directory entry only (never recursive; contents keep their ownership)"
 
         return 0
@@ -677,13 +766,13 @@ report_directory() {
 
     if [[ "${policy}" == nw ]]; then
         if mode_group_other_writable "${actual_mode}"; then
-            item CONFLICT "path:${path}" "mode ${actual_mode} is group- or other-writable (${label})" \
+            item "${remediable}" "path:${path}" "mode ${actual_mode} is group- or other-writable (${label})" \
                 "chmod 0750 on this directory entry only (never recursive)"
 
             return 0
         fi
     elif ! mode_equals "${actual_mode}" "${mode}"; then
-        item CONFLICT "path:${path}" "mode ${actual_mode}, required ${mode} (${label})" \
+        item "${remediable}" "path:${path}" "mode ${actual_mode}, required ${mode} (${label})" \
             "chmod ${mode} on this directory entry only (never recursive)"
 
         return 0
@@ -716,15 +805,55 @@ report_deployment_symlink() {
     fi
 }
 
+# report_host_root PATH OWNER GROUP MODE LABEL — the target-mode view of a host
+# root: exactly the same expectation, reported and never converged.
+#
+# A target cannot be repaired onto a host that does not have its namespace, so
+# this still blocks. What it must not do is quietly turn a target repair into a
+# host bootstrap, so the status says whose job the fix is.
+# Signature is deliberately identical to report_directory's, so the two are
+# interchangeable at the one call site that chooses between them. POLICY is
+# accepted and unused: every host root is an exact-mode entry.
+report_host_root() {
+    local path="$1" owner="$2" group="$3" mode="$4" label="$6"
+
+    local probe
+    if ! probe="$(stat_probe "${path}")"; then
+        item HOST-REQ "host:${path}" "absent (${label})" \
+            "run install-bootstrap-host-layout --apply WITHOUT --target — a target-scoped run never creates a host root"
+
+        return 0
+    fi
+
+    local actual_type actual_owner actual_group actual_mode
+    IFS='|' read -r actual_type actual_owner actual_group actual_mode <<<"${probe}"
+
+    if [[ "${actual_type}" != directory ]] \
+        || [[ "${actual_owner}" != "${owner}" ]] \
+        || [[ "${actual_group}" != "${group}" ]] \
+        || ! mode_equals "${actual_mode}" "${mode}"
+    then
+        item HOST-REQ "host:${path}" "${actual_type}, ${actual_owner}:${actual_group}, mode ${actual_mode}; required directory ${owner}:${group} mode ${mode} (${label})" \
+            "run install-bootstrap-host-layout --apply WITHOUT --target — a target-scoped run never re-owns a host root"
+
+        return 0
+    fi
+
+    item PASS "host:${path}" "directory, ${actual_owner}:${actual_group}, mode ${actual_mode} (${label}; host-owned, never converged here)"
+}
+
 report_filesystem() {
     section "FILESYSTEM"
 
-    report_directory "${RATEGURU_ROOT}" root root 0755 exact "host namespace root"
-    report_directory "${RATEGURU_ROOT}/config" root root 0755 exact "non-secret host configuration root (contents installed by slice 5.4)"
-    report_directory "${RATEGURU_ROOT}/bin" root root 0755 exact "operational CLI root (contents installed by slice 5.4)"
-    report_directory "${RATEGURU_ROOT}/backups" root root 0700 exact "local backup base (contents never scanned)"
-    report_directory "${RATEGURU_ROOT}/run" root root 0700 exact "operational lock directory"
-    report_directory "${LOG_DIR}" root root 0750 exact "operational log directory"
+    local host_report=report_directory
+    target_scoped && host_report=report_host_root
+
+    "${host_report}" "${RATEGURU_ROOT}" root root 0755 exact "host namespace root"
+    "${host_report}" "${RATEGURU_ROOT}/config" root root 0755 exact "non-secret host configuration root"
+    "${host_report}" "${RATEGURU_ROOT}/bin" root root 0755 exact "operational CLI root"
+    "${host_report}" "${RATEGURU_ROOT}/backups" root root 0700 exact "local backup base (contents never scanned)"
+    "${host_report}" "${RATEGURU_ROOT}/run" root root 0700 exact "operational lock directory"
+    "${host_report}" "${LOG_DIR}" root root 0750 exact "operational log directory"
 
     local target_id
     for target_id in "${ACTIVE_TARGETS[@]}"; do
@@ -753,22 +882,41 @@ report_filesystem() {
 report_summary() {
     section "SUMMARY"
 
-    printf 'Bootstrap host layout installer (%s):\n' "${MODE}"
+    if target_scoped; then
+        printf 'Bootstrap host layout installer (%s, target %s):\n' "${MODE}" "${TARGET_SCOPE}"
+    else
+        printf 'Bootstrap host layout installer (%s):\n' "${MODE}"
+    fi
+
     printf 'PASS: %d\n' "${COUNT_PASS}"
     printf 'MISSING: %d\n' "${COUNT_MISSING}"
     printf 'WARN: %d\n' "${COUNT_WARN}"
     printf 'CONFLICT: %d\n' "${COUNT_CONFLICT}"
+
+    if target_scoped; then
+        printf 'DRIFT: %d\n' "${COUNT_DRIFT}"
+        printf 'HOST-REQ: %d\n' "${COUNT_HOST_REQ}"
+    fi
+
     printf '\n'
 
     if contract_satisfied; then
-        printf 'SLICE 5.3 CONTRACT: SATISFIED\n'
+        if target_scoped; then
+            printf 'HOST LAYOUT CONTRACT (%s): SATISFIED\n' "${TARGET_SCOPE}"
+        else
+            printf 'SLICE 5.3 CONTRACT: SATISFIED\n'
+        fi
     else
-        printf 'SLICE 5.3 CONTRACT: NOT SATISFIED\n'
+        if target_scoped; then
+            printf 'HOST LAYOUT CONTRACT (%s): NOT SATISFIED\n' "${TARGET_SCOPE}"
+        else
+            printf 'SLICE 5.3 CONTRACT: NOT SATISFIED\n'
+        fi
     fi
 }
 
 contract_satisfied() {
-    (( COUNT_MISSING == 0 )) && (( COUNT_CONFLICT == 0 ))
+    (( COUNT_MISSING == 0 )) && (( COUNT_DRIFT == 0 )) && (( COUNT_CONFLICT == 0 )) && (( COUNT_HOST_REQ == 0 ))
 }
 
 # run_contract_report — the full read-only report used by --check and
@@ -776,7 +924,12 @@ contract_satisfied() {
 # slice 5.3 contract is satisfied.
 run_contract_report() {
     printf 'RateGuru bootstrap host layout installer (%s mode)\n' "${MODE}"
-    printf 'Allowed namespace: %s (active targets only; planned targets are never provisioned)\n' "${RATEGURU_ROOT}"
+
+    if target_scoped; then
+        printf 'Scope: target %s only — host roots are inspected as prerequisites and never converged\n' "${TARGET_SCOPE}"
+    else
+        printf 'Allowed namespace: %s (active targets only; planned targets are never provisioned)\n' "${RATEGURU_ROOT}"
+    fi
 
     report_targets
     report_prerequisites
@@ -854,12 +1007,17 @@ managed_directory_paths() {
         printf '%s\n' "${TGT_DEPLOY_HOME[${target_id}]}/.ssh"
     done
 
-    printf '%s\n' "${RATEGURU_ROOT}"
-    printf '%s\n' "${RATEGURU_ROOT}/config"
-    printf '%s\n' "${RATEGURU_ROOT}/bin"
-    printf '%s\n' "${RATEGURU_ROOT}/backups"
-    printf '%s\n' "${RATEGURU_ROOT}/run"
-    printf '%s\n' "${LOG_DIR}"
+    # Host roots are managed by the host-mode run only. In target mode they are
+    # prerequisites: inspected by report_host_root, never entered here, so the
+    # apply gate below cannot claim a host root as this run's to fix.
+    if ! target_scoped; then
+        printf '%s\n' "${RATEGURU_ROOT}"
+        printf '%s\n' "${RATEGURU_ROOT}/config"
+        printf '%s\n' "${RATEGURU_ROOT}/bin"
+        printf '%s\n' "${RATEGURU_ROOT}/backups"
+        printf '%s\n' "${RATEGURU_ROOT}/run"
+        printf '%s\n' "${LOG_DIR}"
+    fi
 
     for target_id in "${ACTIVE_TARGETS[@]}"; do
         printf '%s\n' "${TGT_ROOT[${target_id}]}"
@@ -907,6 +1065,56 @@ apply_gate_filesystem() {
         done
 
         fail "refusing to apply: ${#conflicts[@]} filesystem conflict(s) — conflicting paths are never deleted or replaced, and no mutation was performed"
+    fi
+}
+
+# apply_gate_host_roots — target mode only. The host roots this run may not
+# create must already be exactly right, proven BEFORE the first mutation.
+#
+# Without this a target repair on a half-built host would converge the target's
+# own entries and then report a contract failure at the end, having already
+# mutated. Refusing up front keeps "repair a target" from ever partially
+# becoming "bootstrap a host".
+apply_gate_host_roots() {
+    target_scoped || return 0
+
+    local failures=() path probe actual_type actual_owner actual_group actual_mode
+    local -a roots=(
+        "${RATEGURU_ROOT}|root|root|0755"
+        "${RATEGURU_ROOT}/config|root|root|0755"
+        "${RATEGURU_ROOT}/bin|root|root|0755"
+        "${RATEGURU_ROOT}/backups|root|root|0700"
+        "${RATEGURU_ROOT}/run|root|root|0700"
+        "${LOG_DIR}|root|root|0750"
+    )
+
+    local spec owner group mode
+    for spec in "${roots[@]}"; do
+        IFS='|' read -r path owner group mode <<<"${spec}"
+
+        if ! probe="$(stat_probe "${path}")"; then
+            failures+=("${path} is absent")
+            continue
+        fi
+
+        IFS='|' read -r actual_type actual_owner actual_group actual_mode <<<"${probe}"
+
+        if [[ "${actual_type}" != directory ]] \
+            || [[ "${actual_owner}" != "${owner}" ]] \
+            || [[ "${actual_group}" != "${group}" ]] \
+            || ! mode_equals "${actual_mode}" "${mode}"
+        then
+            failures+=("${path} is ${actual_type} ${actual_owner}:${actual_group} mode ${actual_mode}, required directory ${owner}:${group} mode ${mode}")
+        fi
+    done
+
+    if (( ${#failures[@]} > 0 )); then
+        local failure
+        for failure in "${failures[@]}"; do
+            printf 'HOST-REQ %s\n' "${failure}" >&2
+        done
+
+        fail "refusing to apply --target ${TARGET_SCOPE}: ${#failures[@]} host-level prerequisite(s) are not satisfied, and a target-scoped run never creates or re-owns a host root. Converge the host first with install-bootstrap-host-layout --apply (no --target). No mutation was performed"
     fi
 }
 
@@ -1118,13 +1326,17 @@ converge_filesystem() {
         ensure_directory "${TGT_DEPLOY_HOME[${target_id}]}/.ssh" "${TGT_DEPLOY_USER[${target_id}]}" "${TGT_DEPLOY_USER[${target_id}]}" 0700 exact
     done
 
-    ensure_namespace_parent
-    ensure_directory "${RATEGURU_ROOT}" root root 0755 exact
-    ensure_directory "${RATEGURU_ROOT}/config" root root 0755 exact
-    ensure_directory "${RATEGURU_ROOT}/bin" root root 0755 exact
-    ensure_directory "${RATEGURU_ROOT}/backups" root root 0700 exact
-    ensure_directory "${RATEGURU_ROOT}/run" root root 0700 exact
-    ensure_directory "${LOG_DIR}" root root 0750 exact
+    # The host namespace itself, and only in host mode. A target-scoped repair
+    # that created or re-owned these would have quietly become a bootstrap.
+    if ! target_scoped; then
+        ensure_namespace_parent
+        ensure_directory "${RATEGURU_ROOT}" root root 0755 exact
+        ensure_directory "${RATEGURU_ROOT}/config" root root 0755 exact
+        ensure_directory "${RATEGURU_ROOT}/bin" root root 0755 exact
+        ensure_directory "${RATEGURU_ROOT}/backups" root root 0700 exact
+        ensure_directory "${RATEGURU_ROOT}/run" root root 0700 exact
+        ensure_directory "${LOG_DIR}" root root 0750 exact
+    fi
 
     for target_id in "${ACTIVE_TARGETS[@]}"; do
         local root="${TGT_ROOT[${target_id}]}"
@@ -1155,6 +1367,7 @@ perform_apply() {
     apply_gate_prerequisites
     apply_gate_identities
     apply_gate_filesystem
+    apply_gate_host_roots
 
     converge_groups
     converge_users
@@ -1187,6 +1400,20 @@ parse_args() {
                 MODE_SEEN=true
                 shift
                 ;;
+            --target)
+                if [[ -n "${TARGET_SCOPE}" ]]; then
+                    usage >&2
+                    fail "--target given more than once"
+                fi
+
+                if [[ $# -lt 2 ]] || [[ -z "${2-}" ]] || [[ "${2-}" == -* ]]; then
+                    usage >&2
+                    fail "--target requires a target ID"
+                fi
+
+                TARGET_SCOPE="$2"
+                shift 2
+                ;;
             --help|-h)
                 usage
                 exit 0
@@ -1215,7 +1442,11 @@ main() {
             run_contract_report || exit 1
             ;;
         apply)
-            printf 'RateGuru bootstrap host layout installer (apply mode)\n'
+            if target_scoped; then
+        printf 'RateGuru bootstrap host layout installer (apply mode, target %s)\n' "${TARGET_SCOPE}"
+    else
+        printf 'RateGuru bootstrap host layout installer (apply mode)\n'
+    fi
             perform_apply || exit 1
             ;;
     esac

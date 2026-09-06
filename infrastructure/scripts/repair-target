@@ -1,0 +1,1122 @@
+#!/usr/bin/env bash
+#
+# repair-target — converge ONE live target's own infrastructure back onto the
+# committed source of truth, without touching its code or its data.
+#
+#   repair-target --check  --target TARGET_ID
+#   repair-target --apply  --target TARGET_ID
+#   repair-target --verify --target TARGET_ID
+#
+# The situation this exists for: the VPS is alive, the host runtime is intact,
+# the target is registered, active and has a real deployed release — and only
+# the target's OWN infrastructure has drifted. A wrong owner or mode on a target
+# directory, a lost code-group membership, a damaged Nginx vhost, a missing
+# enabled symlink, a PHP-FPM pool or Supervisor program that no longer matches
+# what is committed, an absent scheduler cron, a public-storage ACL that was
+# wiped, a queue that will not run because of any of those.
+#
+#   BROKEN TARGET + HEALTHY HOST + EXISTING DATA/RELEASE
+#     -> target-scoped infrastructure converged
+#     -> same code, same database, same storage, same .env, healthy runtime
+#
+# What it is NOT, and the boundary is the whole point:
+#
+#   Prepare Host          a clean or new host's infrastructure
+#   Restore Target Data   the database and storage are wrong
+#   Recover Host          the whole VPS is gone
+#   deploy / rollback     the CODE should change
+#
+# So this never installs a package, never touches host-global runtime, never
+# rewrites the SSH policy, the perimeter, mail capture or the backup cron, never
+# provisions a database, never restores a backup, never builds, never switches
+# `current` or `previous`, and never runs a migration. If the damage is above
+# target level, it fails closed and says so rather than quietly becoming a
+# bootstrap.
+#
+# It is orchestration only. Every convergence it performs is delegated to the
+# authoritative installer that already owns that contract, invoked in its
+# target-scoped mode:
+#
+#   install-bootstrap-host-layout --apply --target TARGET_ID
+#   install-bootstrap-services    --apply --target TARGET_ID
+#
+# There is deliberately no second implementation of any layout or service check
+# in this file.
+
+set -Eeuo pipefail
+umask 022
+
+# RATEGURU_COMMON_FILE is only honored alongside RATEGURU_ALLOW_TEST_OVERRIDES
+# =true — see the identical comment in infrastructure/scripts/deploy. common has
+# not been sourced yet at this point, so this is a plain inline condition, not a
+# call to rateguru_test_overrides_allowed().
+COMMON_FILE=/home/www/rateguru/bin/common
+
+if [[ "${RATEGURU_ALLOW_TEST_OVERRIDES:-false}" == true ]] \
+    && [[ -n "${RATEGURU_COMMON_FILE:-}" ]]
+then
+    COMMON_FILE="${RATEGURU_COMMON_FILE}"
+fi
+
+# shellcheck disable=SC1090
+source "${COMMON_FILE}"
+
+# --- Gated test seams ---------------------------------------------------------
+#
+# The same FOO_BIN_DEFAULT/FOO_BIN + rateguru_test_overrides_allowed shape every
+# other operational script uses. Production values are unchanged; these exist so
+# tests can drive the real orchestration against self-contained stubs.
+
+# gated_default VAR_NAME DEFAULT — the same helper every other installer
+# defines, with the same single gate: an override is honored only when
+# RATEGURU_ALLOW_TEST_OVERRIDES=true. Production sets neither, so every value
+# below resolves to its installed default.
+gated_default() {
+    local var_name="$1" default_value="$2"
+
+    if rateguru_test_overrides_allowed && [[ -n "${!var_name:-}" ]]; then
+        printf '%s\n' "${!var_name}"
+    else
+        printf '%s\n' "${default_value}"
+    fi
+}
+
+# The two owning installers are resolved relative to THIS file rather than to
+# the installed bin directory, so a repair always delegates to the installers
+# from the same trusted bundle it was itself run from. Repairing a target with
+# a mixture of two bundles' logic is exactly the class of surprise this
+# operation exists to remove.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+
+HOSTLAYOUT_BIN="$(gated_default RATEGURU_REPAIR_HOSTLAYOUT_BIN "${SCRIPT_DIR}/install-bootstrap-host-layout")"
+SERVICES_BIN="$(gated_default RATEGURU_REPAIR_SERVICES_BIN "${SCRIPT_DIR}/install-bootstrap-services")"
+HEALTH_CHECK_BIN="$(gated_default RATEGURU_REPAIR_HEALTH_CHECK_BIN /home/www/rateguru/bin/health-check)"
+RUN_ROOT="$(gated_default RATEGURU_RUN_ROOT /home/www/rateguru/run)"
+CRON_D_ROOT="$(gated_default RATEGURU_REPAIR_CRON_D_ROOT /etc/cron.d)"
+SUPERVISORCTL_BIN="$(gated_default RATEGURU_REPAIR_SUPERVISORCTL_BIN supervisorctl)"
+QUEUE_WAIT_ATTEMPTS="$(gated_default RATEGURU_REPAIR_QUEUE_WAIT_ATTEMPTS 30)"
+QUEUE_RETRY_DELAY="$(gated_default RATEGURU_REPAIR_QUEUE_RETRY_DELAY 2)"
+EFFECTIVE_UID="$(gated_default RATEGURU_REPAIR_EUID "${EUID}")"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  repair-target --check  --target TARGET_ID
+  repair-target --apply  --target TARGET_ID
+  repair-target --verify --target TARGET_ID
+
+  --check   Strictly read-only. Reports every target-scoped item as PASS,
+            DRIFT, MISSING, CONFLICT, HOST-REQ, RESTORE-HOLD or MAINTENANCE,
+            with the repair each unsatisfied one would receive. Creates
+            nothing — not even a lock file. Exit 0 only when no repair is
+            required.
+  --apply   Builds the whole repair plan first and refuses before the first
+            mutation if anything is unsafe. Then converges this target's
+            layout and services through their authoritative installers, and
+            proves the code, the database, the storage and the environment
+            file are exactly as they were.
+  --verify  Read-only. The authoritative gate: exit 0 only when this target
+            satisfies the repair contract.
+
+All modes require root. Every mode refuses a target that is not
+lifecycle=active.
+
+A terminal success additionally prints one machine-readable line:
+
+  RATEGURU_REPAIR_RESULT={"status":"completed", ...}
+USAGE
+}
+
+# --- Report vocabulary --------------------------------------------------------
+
+MODE=""
+MODE_SEEN=false
+TARGET_ID=""
+TARGET_SEEN=false
+
+COUNT_PASS=0
+COUNT_DRIFT=0
+COUNT_MISSING=0
+COUNT_CONFLICT=0
+COUNT_HOST_REQ=0
+COUNT_BLOCKED=0
+
+section() {
+    printf '\n%s\n' "$1"
+}
+
+# item STATUS NAME DETAIL [ACTION]
+#
+# Same fixed-width shape as every other RateGuru installer report. RESTORE-HOLD
+# and MAINTENANCE are this orchestrator's own two additions: both mean "a repair
+# would be unsafe because somebody else's operation owns this target right now",
+# which is neither drift nor a conflict in the filesystem sense.
+item() {
+    local status="$1" name="$2" detail="$3" action="${4:-}"
+
+    case "${status}" in
+        PASS)         COUNT_PASS=$((COUNT_PASS + 1)) ;;
+        DRIFT)        COUNT_DRIFT=$((COUNT_DRIFT + 1)) ;;
+        MISSING)      COUNT_MISSING=$((COUNT_MISSING + 1)) ;;
+        CONFLICT)     COUNT_CONFLICT=$((COUNT_CONFLICT + 1)) ;;
+        HOST-REQ)     COUNT_HOST_REQ=$((COUNT_HOST_REQ + 1)) ;;
+        RESTORE-HOLD) COUNT_BLOCKED=$((COUNT_BLOCKED + 1)) ;;
+        MAINTENANCE)  COUNT_BLOCKED=$((COUNT_BLOCKED + 1)) ;;
+        *)            fail "internal: unknown item status: ${status}" ;;
+    esac
+
+    printf '  %-12s %s — %s\n' "${status}" "${name}" "${detail}"
+
+    if [[ "${MODE}" == check ]] && [[ "${status}" != PASS ]] && [[ -n "${action}" ]]; then
+        printf '               -> repair: %s\n' "${action}"
+    fi
+}
+
+action() {
+    printf 'REPAIR   %s\n' "$*"
+}
+
+repair_required() {
+    (( COUNT_DRIFT > 0 )) || (( COUNT_MISSING > 0 ))
+}
+
+repair_blocked() {
+    (( COUNT_CONFLICT > 0 )) || (( COUNT_HOST_REQ > 0 )) || (( COUNT_BLOCKED > 0 ))
+}
+
+contract_satisfied() {
+    ! repair_required && ! repair_blocked
+}
+
+# --- Argument parsing ---------------------------------------------------------
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check|--apply|--verify)
+                [[ "${MODE_SEEN}" != true ]] || fail "only one of --check, --apply or --verify may be given"
+                MODE="${1#--}"
+                MODE_SEEN=true
+                shift
+                ;;
+            --target)
+                [[ "${TARGET_SEEN}" != true ]] || fail "--target given more than once"
+                [[ $# -ge 2 ]] || fail "--target requires a value"
+                [[ -n "${2-}" ]] || fail "--target requires a non-empty value"
+                case "${2-}" in
+                    -*) fail "--target requires a value, not another option: $2" ;;
+                esac
+                TARGET_ID="$2"
+                TARGET_SEEN=true
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                usage >&2
+                fail "unknown argument: $1"
+                ;;
+        esac
+    done
+
+    [[ "${MODE_SEEN}" == true ]] || fail "one of --check, --apply or --verify is required"
+    [[ "${TARGET_SEEN}" == true ]] || fail "--target is required"
+}
+
+# --- Target resolution --------------------------------------------------------
+
+TARGET_ROOT=""
+ENVIRONMENT_CLASS=""
+RUNTIME_USER=""
+SUPERVISOR_PROGRAM=""
+SCHEDULER_NAME=""
+SCHEDULER_FILE=""
+CURRENT_LINK=""
+PREVIOUS_LINK=""
+RELEASES_ROOT=""
+SHARED_ENV=""
+SHARED_STORAGE=""
+MAINTENANCE_FLAG=""
+
+resolve_target() {
+    require_active_target "${TARGET_ID}"
+
+    TARGET_ROOT="$(target_root "${TARGET_ID}")"
+    ENVIRONMENT_CLASS="$(target_environment_class "${TARGET_ID}")"
+    RUNTIME_USER="$(target_runtime_user "${TARGET_ID}")"
+    SUPERVISOR_PROGRAM="$(target_supervisor_program "${TARGET_ID}")"
+    SCHEDULER_NAME="$(target_scheduler_name "${TARGET_ID}")"
+
+    [[ "${SUPERVISOR_PROGRAM}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] \
+        || fail "registry Supervisor program for ${TARGET_ID} is not a plain program name: ${SUPERVISOR_PROGRAM}"
+    [[ "${SCHEDULER_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] \
+        || fail "registry scheduler name for ${TARGET_ID} is not a plain cron.d entry name: ${SCHEDULER_NAME}"
+
+    CURRENT_LINK="${TARGET_ROOT}/current"
+    PREVIOUS_LINK="${TARGET_ROOT}/previous"
+    RELEASES_ROOT="${TARGET_ROOT}/releases"
+    SHARED_ENV="${TARGET_ROOT}/shared/.env"
+    SHARED_STORAGE="${TARGET_ROOT}/shared/storage"
+    MAINTENANCE_FLAG="${SHARED_STORAGE}/framework/down"
+    SCHEDULER_FILE="${CRON_D_ROOT}/${SCHEDULER_NAME}"
+}
+
+# --- Deployed-target precondition ---------------------------------------------
+#
+# Repair converges the infrastructure AROUND a release. With no canonical
+# release there is nothing to converge around, and picking one would be
+# inventing state: "the newest directory in releases/" is a guess about which
+# code this target is supposed to serve, and a wrong guess there is a silent
+# production incident. That case is explicitly somebody else's operation.
+
+CURRENT_RELEASE=""
+CURRENT_SOURCE_SHA=""
+CURRENT_TARGET_PATH=""
+PREVIOUS_TARGET_PATH=""
+
+# DEPLOYED_PROBLEM carries the reason out instead of stdout, deliberately.
+#
+# This function is the ONLY reader of the live release identity, and every
+# caller needs both halves of its answer: whether the target is deployed, and
+# what it is deployed to. Returning the reason on stdout would force callers to
+# run it as "$(deployed_target_problem)" — a subshell, where CURRENT_RELEASE and
+# CURRENT_SOURCE_SHA would be assigned and then discarded. The immutability
+# proof would then compare an empty baseline against an empty reading and pass
+# no matter what had changed underneath it.
+DEPLOYED_PROBLEM=""
+
+deployed_target_problem() {
+    DEPLOYED_PROBLEM=""
+
+    local resolved metadata
+
+    [[ -L "${CURRENT_LINK}" ]] \
+        || { DEPLOYED_PROBLEM="$(printf 'current is not a symlink (%s)' "${CURRENT_LINK}")"; return 0; }
+
+    [[ ! -L "${RELEASES_ROOT}" ]] \
+        || { DEPLOYED_PROBLEM="$(printf 'releases root is a symlink (%s)' "${RELEASES_ROOT}")"; return 0; }
+    [[ -d "${RELEASES_ROOT}" ]] \
+        || { DEPLOYED_PROBLEM="$(printf 'releases root is not a directory (%s)' "${RELEASES_ROOT}")"; return 0; }
+
+    resolved="$(readlink -f "${CURRENT_LINK}" 2>/dev/null || printf '')"
+    [[ -n "${resolved}" ]] && [[ -d "${resolved}" ]] \
+        || { DEPLOYED_PROBLEM='current does not resolve to a directory'; return 0; }
+
+    local resolved_releases
+    resolved_releases="$(readlink -f "${RELEASES_ROOT}" 2>/dev/null || printf '')"
+    [[ -n "${resolved_releases}" ]] \
+        || { DEPLOYED_PROBLEM='releases root does not resolve'; return 0; }
+
+    [[ "$(dirname "${resolved}")" == "${resolved_releases}" ]] \
+        || { DEPLOYED_PROBLEM="$(printf 'current resolves outside this target releases directory (%s)' "${resolved}")"; return 0; }
+
+    metadata="${resolved}/release.json"
+    [[ -f "${metadata}" ]] && [[ ! -L "${metadata}" ]] \
+        || { DEPLOYED_PROBLEM='current release has no regular release.json'; return 0; }
+
+    jq -e 'type == "object"' "${metadata}" >/dev/null 2>&1 \
+        || { DEPLOYED_PROBLEM='release.json is not a JSON object'; return 0; }
+
+    local release sha
+    release="$(jq -r 'select(.release | type == "string") | .release // empty' "${metadata}" 2>/dev/null || printf '')"
+    sha="$(jq -r 'select(.source_sha | type == "string") | .source_sha // empty' "${metadata}" 2>/dev/null || printf '')"
+
+    [[ -n "${release}" ]] || { DEPLOYED_PROBLEM='release.json carries no release identity'; return 0; }
+    [[ "${sha}" =~ ^[0-9a-f]{7,40}$ ]] || { DEPLOYED_PROBLEM='release.json carries no usable source_sha'; return 0; }
+
+    [[ -f "${resolved}/artisan" ]] \
+        || { DEPLOYED_PROBLEM='current release contains no artisan'; return 0; }
+
+    [[ ! -L "${SHARED_ENV}" ]] \
+        || { DEPLOYED_PROBLEM='shared/.env is a symlink'; return 0; }
+    [[ -f "${SHARED_ENV}" ]] \
+        || { DEPLOYED_PROBLEM='shared/.env is not a regular file'; return 0; }
+
+    [[ -d "${SHARED_STORAGE}" ]] && [[ ! -L "${SHARED_STORAGE}" ]] \
+        || { DEPLOYED_PROBLEM='shared/storage is not a real directory'; return 0; }
+
+    CURRENT_RELEASE="${release}"
+    CURRENT_SOURCE_SHA="${sha}"
+
+    return 1
+}
+
+# read_deployed_identity — the values the immutability proof is built on.
+# Callers run deployed_target_problem first; this only records.
+read_deployed_identity() {
+    CURRENT_TARGET_PATH="$(readlink "${CURRENT_LINK}" 2>/dev/null || printf '')"
+    PREVIOUS_TARGET_PATH="$(readlink "${PREVIOUS_LINK}" 2>/dev/null || printf '')"
+}
+
+# --- Immutable baseline -------------------------------------------------------
+#
+# A cheap, non-secret proof that the environment file was neither replaced nor
+# rewritten: device, inode, size, mtime, owner, group and mode. Deliberately NOT
+# a content hash — a hash of secret material is a fingerprint of that material,
+# and nothing about .env content belongs in this orchestrator's output or logs.
+
+BASELINE_ENV=""
+BASELINE_CURRENT=""
+BASELINE_PREVIOUS=""
+BASELINE_RELEASE=""
+BASELINE_SOURCE_SHA=""
+BASELINE_STORAGE=""
+
+env_fingerprint() {
+    stat -c '%d:%i:%s:%Y:%u:%g:%a' "${SHARED_ENV}"
+}
+
+# The one entry under shared/storage that is infrastructure rather than data:
+# install-bootstrap-services owns it, creates it and sets its owner and mode,
+# because the committed PHP-FPM and Supervisor configs write into it.
+SERVICE_LOG_DIRNAME=logs
+
+# storage_fingerprint — the STRUCTURE of the target's DATA under shared
+# storage, never its contents.
+#
+# Repair may not create, delete or re-own anything a user put there, so the
+# proof is that the entries and their ownership are identical afterwards.
+# Content is deliberately not read: it is user data, it can be large, and
+# hashing it would be both slow and none of this operation's business.
+#
+# The service-log directory is excluded, and that is not a loophole — it is the
+# boundary being drawn correctly. Repairing its owner or mode is one of the
+# things this operation exists to do, so including it would make a legitimate
+# repair fail its own immutability proof. It would also make the proof flaky
+# for a reason that has nothing to do with safety: the application writes log
+# files continuously, so a new one appearing mid-repair would be read as the
+# repair having touched user data.
+storage_fingerprint() {
+    # Errors are deliberately NOT discarded. An empty fingerprint would mean
+    # "this target has no shared storage", which is indistinguishable from
+    # "the tool that reads it is broken" — and comparing an empty baseline
+    # against an empty reading afterwards proves nothing at all.
+    find "${SHARED_STORAGE}" -mindepth 1 -maxdepth 2 \
+            -path "${SHARED_STORAGE}/${SERVICE_LOG_DIRNAME}" -prune -o \
+            -printf '%P|%y|%u|%g|%m\n' \
+        | LC_ALL=C sort
+}
+
+capture_baseline() {
+    read_deployed_identity
+
+    BASELINE_ENV="$(env_fingerprint)"
+    BASELINE_CURRENT="${CURRENT_TARGET_PATH}"
+    BASELINE_PREVIOUS="${PREVIOUS_TARGET_PATH}"
+    BASELINE_RELEASE="${CURRENT_RELEASE}"
+    BASELINE_SOURCE_SHA="${CURRENT_SOURCE_SHA}"
+    BASELINE_STORAGE="$(storage_fingerprint)"
+}
+
+assert_baseline_unchanged() {
+    read_deployed_identity
+
+    [[ "${CURRENT_TARGET_PATH}" == "${BASELINE_CURRENT}" ]] \
+        || fail "current changed during the repair (${BASELINE_CURRENT} -> ${CURRENT_TARGET_PATH}) — a repair never switches a release"
+
+    [[ "${PREVIOUS_TARGET_PATH}" == "${BASELINE_PREVIOUS}" ]] \
+        || fail "previous changed during the repair (${BASELINE_PREVIOUS} -> ${PREVIOUS_TARGET_PATH}) — a repair never moves the rollback pointer"
+
+    if deployed_target_problem; then
+        fail "the target stopped being a deployed target during the repair: ${DEPLOYED_PROBLEM}"
+    fi
+
+    [[ "${CURRENT_RELEASE}" == "${BASELINE_RELEASE}" ]] \
+        || fail "the current release identity changed during the repair (${BASELINE_RELEASE} -> ${CURRENT_RELEASE})"
+
+    [[ "${CURRENT_SOURCE_SHA}" == "${BASELINE_SOURCE_SHA}" ]] \
+        || fail "the current release source_sha changed during the repair (${BASELINE_SOURCE_SHA} -> ${CURRENT_SOURCE_SHA})"
+
+    [[ "$(env_fingerprint)" == "${BASELINE_ENV}" ]] \
+        || fail "shared/.env changed during the repair — a repair never writes, replaces or restores the environment file"
+
+    [[ "$(storage_fingerprint)" == "${BASELINE_STORAGE}" ]] \
+        || fail "the shared storage structure changed during the repair — a repair never creates, deletes or re-owns anything under shared/storage"
+}
+
+# --- Runtime observation ------------------------------------------------------
+
+maintenance_active() {
+    [[ -f "${MAINTENANCE_FLAG}" ]]
+}
+
+scheduler_present() {
+    [[ -f "${SCHEDULER_FILE}" ]] && [[ ! -L "${SCHEDULER_FILE}" ]]
+}
+
+# Supervisor's own status exit codes, from the pinned supervisor the host runs:
+#   0  every matched process is in a running-ish state
+#   3  at least one matched process is STOPPED, EXITED, FATAL or UNKNOWN
+#   4  upcheck() failed, or a name matched nothing
+# Only 0 and 3 mean "supervisord answered about the group we asked for".
+queue_program_running() {
+    local output status=0
+
+    output="$("${SUPERVISORCTL_BIN}" status "${SUPERVISOR_PROGRAM}:*" 2>/dev/null)" || status=$?
+
+    (( status == 0 )) || (( status == 3 )) || return 1
+    [[ -n "${output//[[:space:]]/}" ]] || return 1
+
+    local line namespec state
+    while IFS= read -r line; do
+        [[ -n "${line//[[:space:]]/}" ]] || continue
+        read -r namespec state _ <<<"${line}"
+
+        [[ "${namespec}" == "${SUPERVISOR_PROGRAM}" ]] || [[ "${namespec}" == "${SUPERVISOR_PROGRAM}:"* ]] || return 1
+        [[ "${state}" == RUNNING ]] || return 1
+    done <<<"${output}"
+
+    return 0
+}
+
+# health_passing — the target is actually serving.
+#
+# This is also the ONLY database proof this orchestrator makes, deliberately.
+# repair-target contains no database code path at all: no credentials are read
+# out of .env, no connection is opened, no query and above all no migration is
+# ever run. The guarantee "a repair never touches the database" is therefore
+# structural rather than a promise. What remains to be proven is reachability,
+# and the application's own health endpoint proves exactly that end to end —
+# through Nginx, PHP-FPM, the environment file and the database — without this
+# file learning a single credential.
+health_passing() {
+    [[ -x "${HEALTH_CHECK_BIN}" ]] || return 1
+
+    "${HEALTH_CHECK_BIN}" --target "${TARGET_ID}" >/dev/null 2>&1
+}
+
+wait_for_queue_running() {
+    local attempt
+
+    for ((attempt = 1; attempt <= QUEUE_WAIT_ATTEMPTS; attempt++)); do
+        queue_program_running && return 0
+        sleep "${QUEUE_RETRY_DELAY}"
+    done
+
+    queue_program_running
+}
+
+# --- Restore interlock --------------------------------------------------------
+#
+# A restore guard means a restore operation owns this target's data right now.
+# Repairing its infrastructure underneath that is not a data decision this
+# orchestrator is allowed to make, and each guard status needs a different
+# answer, so they are diagnosed separately rather than collapsed into one
+# refusal.
+#
+# --check is deliberately allowed to run and say so: an operator looking at a
+# held target needs the diagnosis, and reading a marker changes nothing.
+
+restore_guard_status() {
+    local marker
+    marker="$(restore_guard_file "${TARGET_ID}" "${RUN_ROOT}")"
+
+    [[ -e "${marker}" ]] || return 1
+
+    jq -r '.status // "unknown"' "${marker}" 2>/dev/null || printf 'unknown'
+}
+
+restore_guard_operation() {
+    local marker
+    marker="$(restore_guard_file "${TARGET_ID}" "${RUN_ROOT}")"
+
+    jq -r '.operation // "unknown"' "${marker}" 2>/dev/null || printf 'unknown'
+}
+
+restore_hold_diagnosis() {
+    local status="$1" operation="$2"
+
+    case "${status}" in
+        held)
+            printf 'this target is intentionally HELD for controlled code alignment by restore operation %s. Finish that operation — run the Restore workflow for this target with mode=continue-held — rather than repairing infrastructure underneath it' "${operation}"
+            ;;
+        in-progress)
+            printf 'restore operation %s is in progress or was interrupted, so the live data state is unresolved. Resolve the restore first; repairing infrastructure while a restore may be half-applied is never safe' "${operation}"
+            ;;
+        failed-held)
+            printf 'restore operation %s failed and left the target held, which means the live data may already have been replaced. That needs an explicit restore or manual recovery decision about which data state is authoritative — a repair must never guess it' "${operation}"
+            ;;
+        *)
+            printf 'restore operation %s left a guard with status %s, which this orchestrator does not recognise. Resolve the restore state before repairing infrastructure' "${operation}" "${status}"
+            ;;
+    esac
+}
+
+report_restore_interlock() {
+    local status operation
+
+    if ! status="$(restore_guard_status)"; then
+        item PASS "restore:guard" "no restore guard — no restore operation owns this target's data"
+        return 0
+    fi
+
+    operation="$(restore_guard_operation)"
+
+    item RESTORE-HOLD "restore:guard" "$(restore_hold_diagnosis "${status}" "${operation}")" \
+        "resolve the restore operation first — repair-target --apply refuses while any restore guard exists, and never clears, rewrites or resumes one"
+}
+
+report_maintenance_interlock() {
+    if ! maintenance_active; then
+        item PASS "runtime:maintenance" "target is not in maintenance mode"
+        return 0
+    fi
+
+    if restore_guard_status >/dev/null; then
+        # Already reported as RESTORE-HOLD; a held target is SUPPOSED to be in
+        # maintenance, so saying it twice would misrepresent one problem as two.
+        item PASS "runtime:maintenance" "in maintenance, which is the held state the restore guard above describes"
+        return 0
+    fi
+
+    item MAINTENANCE "runtime:maintenance" "target is in maintenance mode with no restore guard, so an operator put it there deliberately and this orchestrator cannot tell why" \
+        "bring the target up yourself when you intend it to serve — a repair never runs 'artisan up', because guessing that an operator's maintenance window is over is not a repair"
+}
+
+# --- Report -------------------------------------------------------------------
+
+report_target() {
+    section "TARGET"
+
+    item PASS "target:${TARGET_ID}" "lifecycle=active, environment=${ENVIRONMENT_CLASS}, root ${TARGET_ROOT}"
+}
+
+report_deployed_release() {
+    section "DEPLOYED RELEASE"
+
+    if deployed_target_problem; then
+        item CONFLICT "release:current" "${DEPLOYED_PROBLEM}" \
+            "this is not Repair Target: a target with no canonical deployed release needs an explicit deployment or recovery decision, and a repair never picks a release for you"
+        return 1
+    fi
+
+    item PASS "release:current" "${CURRENT_RELEASE} (source ${CURRENT_SOURCE_SHA}) — preserved exactly by this operation"
+    item PASS "release:shared" "shared/.env is a regular file and shared/storage is a real directory — neither is ever written here"
+
+    if lock_directory_usable; then
+        item PASS "release:lock" "${TARGET_ROOT}/locks is a real directory — --apply can take this target's deployment lock"
+    else
+        item CONFLICT "release:lock" "${TARGET_ROOT}/locks is not a real directory, so this target's deployment lock cannot be taken" \
+            "converge the layout directly first — install-bootstrap-host-layout --apply --target ${TARGET_ID} — because a repair that cannot lock the target cannot safely converge it"
+    fi
+
+    return 0
+}
+
+# lock_directory_usable — the one piece of the layout a repair needs BEFORE it
+# can converge the layout.
+#
+# Without it acquire_deployment_lock's redirection fails with a bare shell
+# error, which is both an unhelpful diagnosis and, on a directory a repair is
+# supposed to be told about, the wrong kind of failure. There is no way around
+# the ordering: taking the lock is what makes converging safe, so a target
+# whose lock directory is missing has to have its layout converged by the
+# owning installer directly.
+lock_directory_usable() {
+    [[ -d "${TARGET_ROOT}/locks" ]] && [[ ! -L "${TARGET_ROOT}/locks" ]]
+}
+
+# child_report BIN — the owning installer's own read-only contract report.
+# Captured once so the same output drives both the operator-facing report and
+# the pre-mutation gate; running a child twice could observe two different
+# states and describe one of them.
+CHILD_OUTPUT=""
+CHILD_STATUS=0
+
+child_report() {
+    local bin="$1"
+
+    CHILD_OUTPUT=""
+    CHILD_STATUS=0
+
+    [[ -x "${bin}" ]] || { CHILD_STATUS=127; return 0; }
+
+    CHILD_OUTPUT="$("${bin}" --check --target "${TARGET_ID}" 2>&1)" || CHILD_STATUS=$?
+}
+
+# child_blocker — the one thing a repair may NOT converge, or empty.
+# A child exit above 1 is a tooling failure, HOST-REQ is a host problem and
+# CONFLICT is drift that is never resolved automatically. Plain DRIFT/MISSING
+# is exactly what this orchestrator exists to fix, so it is not a blocker.
+child_blocker() {
+    local label="$1"
+
+    if (( CHILD_STATUS == 127 )); then
+        printf '%s: installer is not executable — run repair-target from a full trusted infrastructure bundle' "${label}"
+        return 0
+    fi
+
+    if (( CHILD_STATUS > 1 )); then
+        printf '%s: contract report exited %d, so the target state could not even be established' "${label}" "${CHILD_STATUS}"
+        return 0
+    fi
+
+    # The installers abort through fail(), which prints ERROR: and exits 1 —
+    # the same exit code an ordinary "contract not satisfied" report uses. Told
+    # apart only by the exit code, an unreadable registry or a missing
+    # dependency would be read as repairable drift, and the run would converge
+    # the layout before discovering it could never converge the rest.
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q 'ERROR:'; then
+        printf '%s: the installer aborted rather than reporting a contract, so what is wrong with this target is not established' "${label}"
+        return 0
+    fi
+
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q '^  HOST-REQ '; then
+        printf '%s: host-level prerequisites are not satisfied. Converge the host first by running the installer WITHOUT --target — a target-scoped repair never installs or re-owns host infrastructure' "${label}"
+        return 0
+    fi
+
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q '^  CONFLICT '; then
+        printf '%s: drift that is never repaired automatically, because resolving it would mean deleting or replacing something to make room' "${label}"
+        return 0
+    fi
+
+    return 1
+}
+
+# report_child NAME LABEL BIN ARGS... — one delegated, read-only contract
+# report from the installer that owns it. The child's own output is shown
+# indented so an operator sees exactly which item drifted, without this file
+# re-implementing a single one of its checks.
+report_child() {
+    local name="$1" label="$2" bin="$3"
+
+    child_report "${bin}"
+
+    if (( CHILD_STATUS == 0 )); then
+        item PASS "${name}" "target-scoped contract satisfied (${label})"
+        return 0
+    fi
+
+    if (( CHILD_STATUS == 127 )); then
+        item CONFLICT "${name}" "not executable: ${bin} (${label})" \
+            "run repair-target from a full trusted infrastructure bundle"
+        return 0
+    fi
+
+    # A child that cannot even run is not drift.
+    if (( CHILD_STATUS > 1 )); then
+        item CONFLICT "${name}" "contract report exited ${CHILD_STATUS} (${label})" \
+            "resolve the installer failure shown below — the target state could not even be established"
+        printf '%s\n' "${CHILD_OUTPUT}" | sed 's/^/               | /'
+        return 0
+    fi
+
+    # An abort, not a report: the installers exit 1 both for "contract not
+    # satisfied" and for fail(), so the ERROR: line is what tells them apart.
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q 'ERROR:'; then
+        item CONFLICT "${name}" "the installer aborted rather than reporting a contract (${label})" \
+            "resolve the failure shown below — a repair never guesses that an installer which could not run would have found repairable drift"
+        printf '%s\n' "${CHILD_OUTPUT}" | grep 'ERROR:' | sed 's/^/               | /' || true
+        return 0
+    fi
+
+    # HOST-REQ inside the child is a host problem, not this target's.
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q '^  HOST-REQ '; then
+        item HOST-REQ "${name}" "host-level prerequisites are not satisfied (${label})" \
+            "converge the host first — run the corresponding installer WITHOUT --target"
+        printf '%s\n' "${CHILD_OUTPUT}" | grep '^  HOST-REQ ' | sed 's/^/               | /' || true
+        return 0
+    fi
+
+    if printf '%s' "${CHILD_OUTPUT}" | grep -q '^  CONFLICT '; then
+        item CONFLICT "${name}" "unsafe drift that is never repaired automatically (${label})" \
+            "resolve the conflicting paths by hand — nothing is ever deleted or replaced to make room"
+        printf '%s\n' "${CHILD_OUTPUT}" | grep '^  CONFLICT ' | sed 's/^/               | /' || true
+        return 0
+    fi
+
+    item DRIFT "${name}" "target-scoped drift the owning installer can converge (${label})" \
+        "${bin##*/} --apply --target ${TARGET_ID}"
+
+    # `|| true` because this runs under `set -e` with `pipefail`, as the last
+    # command of the function. A child that exited 1 while printing only
+    # ERROR lines — no MISSING, no DRIFT — makes grep exit 1, which would
+    # propagate out of report_child and kill the run mid-report, before the
+    # summary an operator needs in order to know what happened.
+    printf '%s\n' "${CHILD_OUTPUT}" | grep -E '^  (MISSING|DRIFT) ' | sed 's/^/               | /' || true
+}
+
+report_target_infrastructure() {
+    section "TARGET INFRASTRUCTURE (authoritative owners — never re-implemented)"
+
+    report_child "layout:install-bootstrap-host-layout" \
+        "identities, memberships and this target's own directory entries" \
+        "${HOSTLAYOUT_BIN}"
+
+    report_child "services:install-bootstrap-services" \
+        "support log directory, Nginx site and link, PHP-FPM pool, Supervisor program, scheduler cron, public-storage ACL" \
+        "${SERVICES_BIN}"
+}
+
+report_runtime() {
+    section "RUNTIME"
+
+    if scheduler_present; then
+        item PASS "runtime:scheduler" "${SCHEDULER_FILE} is present"
+    else
+        item MISSING "runtime:scheduler" "${SCHEDULER_FILE} is absent or not a regular file" \
+            "converged by install-bootstrap-services --apply --target ${TARGET_ID}"
+    fi
+
+    if queue_program_running; then
+        item PASS "runtime:queue" "${SUPERVISOR_PROGRAM} is RUNNING"
+    else
+        item MISSING "runtime:queue" "${SUPERVISOR_PROGRAM} is not provably RUNNING" \
+            "converge this target's Supervisor program and start ONLY this program group"
+    fi
+
+    report_health
+}
+
+# report_health — reported last, because whether a failing health check is
+# repairable is decided by everything above it.
+#
+# With drift present, health failing is the SYMPTOM of that drift and the
+# convergence is expected to resolve it. With every infrastructure item already
+# satisfied, a failing health check means the damage is somewhere this operation
+# does not reach — and then saying "repair required" would be a lie, because
+# applying the repair would converge nothing and change nothing.
+report_health() {
+    if health_passing; then
+        item PASS "runtime:health" "the target serves its health endpoint, which also proves the database is reachable through the application"
+        return 0
+    fi
+
+    if repair_required; then
+        item DRIFT "runtime:health" "the target does not serve its health endpoint, consistent with the target-scoped drift reported above" \
+            "converge the drift above — the health check is re-run at the end of --apply and a still-failing target fails the repair"
+        return 0
+    fi
+
+    item CONFLICT "runtime:health" "the target does not serve its health endpoint even though every target-scoped item is satisfied, so the cause is outside this operation's scope" \
+        "investigate the release, the data or the host — a repair would converge nothing here, and running one would change nothing"
+}
+
+report_summary() {
+    section "SUMMARY"
+
+    printf 'Repair target (%s, %s):\n' "${MODE}" "${TARGET_ID}"
+    printf 'PASS: %d\n' "${COUNT_PASS}"
+    printf 'DRIFT: %d\n' "${COUNT_DRIFT}"
+    printf 'MISSING: %d\n' "${COUNT_MISSING}"
+    printf 'CONFLICT: %d\n' "${COUNT_CONFLICT}"
+    printf 'HOST-REQ: %d\n' "${COUNT_HOST_REQ}"
+    printf 'BLOCKED: %d\n' "${COUNT_BLOCKED}"
+    printf '\n'
+
+    if contract_satisfied; then
+        printf 'REPAIR REQUIRED: NO\n'
+    elif repair_blocked; then
+        printf 'REPAIR REQUIRED: BLOCKED\n'
+    else
+        printf 'REPAIR REQUIRED: YES\n'
+    fi
+}
+
+run_report() {
+    printf 'RateGuru repair target (%s mode)\n' "${MODE}"
+    printf 'Scope: %s only — host-level infrastructure is inspected and never converged\n' "${TARGET_ID}"
+
+    report_target
+    report_restore_interlock
+    report_maintenance_interlock
+
+    if report_deployed_release; then
+        report_target_infrastructure
+        report_runtime
+    fi
+
+    report_summary
+
+    contract_satisfied
+}
+
+# --- Machine-readable result --------------------------------------------------
+#
+# Exactly one line, on exactly one terminal SUCCESS, in a fixed shape. The human
+# report above stays as it is — an operator reading a terminal is the primary
+# audience. This exists because the GitHub repair workflow has to branch on the
+# outcome, and grepping prose for it would make every wording change a silent
+# behaviour change. Identity only: no secret, no path inside a private tree.
+
+REPAIR_RESULT_EMITTED=false
+
+emit_repair_result() {
+    local status="$1" changed="$2" health="$3" queue="$4" scheduler="$5"
+
+    [[ "${REPAIR_RESULT_EMITTED}" == false ]] \
+        || fail "internal: the machine-readable repair result was already emitted"
+
+    REPAIR_RESULT_EMITTED=true
+
+    local result
+    result="$(
+        jq -cn \
+            --arg status "${status}" \
+            --arg target "${TARGET_ID}" \
+            --arg environment "${ENVIRONMENT_CLASS}" \
+            --arg changed "${changed}" \
+            --arg current_release "${CURRENT_RELEASE}" \
+            --arg source_sha "${CURRENT_SOURCE_SHA}" \
+            --arg health "${health}" \
+            --arg queue "${queue}" \
+            --arg scheduler "${scheduler}" \
+            '{
+                status: $status,
+                target: $target,
+                environment: $environment,
+                changed: ($changed == "true"),
+                current_release: $current_release,
+                source_sha: $source_sha,
+                health: $health,
+                queue: $queue,
+                scheduler: $scheduler
+            }'
+    )" || fail "could not render the machine-readable repair result"
+
+    printf 'RATEGURU_REPAIR_RESULT=%s\n' "${result}"
+}
+
+# --- Apply --------------------------------------------------------------------
+
+require_root_mode() {
+    [[ "${EFFECTIVE_UID}" == "0" ]] || fail "--${MODE} must run as root"
+}
+
+# apply_gate — the whole plan is judged before the first mutation.
+#
+# Repairing five things and then stopping at the sixth leaves a target in a
+# state nobody designed: partially converged, still broken, and now different
+# from what the operator inspected. So every blocker is collected first and the
+# run refuses as a whole.
+apply_gate() {
+    action "building the repair plan before any mutation"
+
+    local blockers=()
+
+    local guard_status
+    if guard_status="$(restore_guard_status)"; then
+        blockers+=("restore guard: $(restore_hold_diagnosis "${guard_status}" "$(restore_guard_operation)")")
+    elif maintenance_active; then
+        blockers+=("maintenance: ${TARGET_ID} is in maintenance mode with no restore guard, so an operator put it there deliberately. A repair never runs 'artisan up' — bring the target up yourself when you intend it to serve")
+    fi
+
+    if deployed_target_problem; then
+        blockers+=("deployed release: ${DEPLOYED_PROBLEM} — a target with no canonical deployed release is not Repair Target's to fix, and a repair never picks a release for you")
+    fi
+
+    # BOTH contracts are judged here, before anything is converged, and that is
+    # the whole point of the gate: converging five things and then discovering
+    # the sixth is unrepairable leaves a target in a state nobody designed —
+    # partially repaired, still broken, and different from what the operator
+    # inspected.
+    #
+    # Reading the services contract this early is only sound because it
+    # distinguishes "unconverged prerequisite" from "unsafe". Its own layout
+    # prerequisite reports as DRIFT, not CONFLICT, and a parser failure caused
+    # by this target's own damaged configuration reports as DRIFT too. Neither
+    # is a blocker; both are exactly what the convergence below fixes.
+    local bin blocker
+    for bin in "${HOSTLAYOUT_BIN}" "${SERVICES_BIN}"; do
+        child_report "${bin}"
+
+        if blocker="$(child_blocker "${bin##*/}")"; then
+            blockers+=("${blocker}")
+            continue
+        fi
+
+        if (( CHILD_STATUS == 0 )); then
+            continue
+        fi
+
+        if [[ "${bin}" == "${HOSTLAYOUT_BIN}" ]]; then
+            LAYOUT_PLANNED=true
+        else
+            SERVICES_PLANNED=true
+        fi
+    done
+
+    if (( ${#blockers[@]} > 0 )); then
+        for blocker in "${blockers[@]}"; do
+            printf 'BLOCKED %s\n' "${blocker}" >&2
+        done
+
+        fail "refusing to repair ${TARGET_ID}: ${#blockers[@]} blocker(s). No mutation was performed"
+    fi
+}
+
+# The plan, in the order the two contracts actually depend on each other:
+# identities and directories before the services that run inside them. CHANGED
+# stays false when neither drifted, so the result can honestly say this run
+# changed nothing.
+LAYOUT_PLANNED=false
+SERVICES_PLANNED=false
+CHANGED=false
+
+converge_child() {
+    local bin="$1" name="${1##*/}"
+
+    action "${name} --apply --target ${TARGET_ID}"
+
+    "${bin}" --apply --target "${TARGET_ID}" \
+        || fail "${name} --apply --target ${TARGET_ID} failed — its own transaction restored what it had changed; no further repair step ran"
+
+    CHANGED=true
+}
+
+# reread_services_contract — after the layout converged, ask the services
+# installer again whether it still has anything to do.
+#
+# This is NOT a second gate. Every blocker was already ruled out before the
+# first mutation; this only refines "does it still need applying", because
+# converging the layout can satisfy part of what the services contract was
+# reporting. A blocker appearing now would mean the target changed underneath a
+# held lock, so it fails loudly rather than being repaired past.
+reread_services_contract() {
+    local blocker
+
+    action "re-reading the services contract now that the layout is converged"
+    child_report "${SERVICES_BIN}"
+
+    if blocker="$(child_blocker "${SERVICES_BIN##*/}")"; then
+        fail "the services contract became unrepairable after the layout was converged: ${blocker}. The layout is converged and verified and is left that way; no service configuration was changed"
+    fi
+
+    if (( CHILD_STATUS == 0 )); then
+        SERVICES_PLANNED=false
+    else
+        SERVICES_PLANNED=true
+    fi
+}
+
+# restore_target_queue — start ONLY this target's program group, and only when
+# its own configuration has just been converged.
+#
+# Never `supervisorctl start all`, never a Supervisor daemon restart, never
+# another target's group. A queue that cannot be proven RUNNING fails the
+# repair rather than being reported as fixed.
+restore_target_queue() {
+    if queue_program_running; then
+        action "queue ${SUPERVISOR_PROGRAM} is already RUNNING"
+        return 0
+    fi
+
+    action "starting queue program ${SUPERVISOR_PROGRAM} (this target's group only)"
+
+    "${SUPERVISORCTL_BIN}" start "${SUPERVISOR_PROGRAM}:*" >/dev/null 2>&1 || true
+
+    wait_for_queue_running \
+        || fail "queue program ${SUPERVISOR_PROGRAM} could not be proven RUNNING after its configuration was converged — the repair is NOT complete, and reporting it as repaired would be false"
+
+    CHANGED=true
+}
+
+perform_apply() {
+    printf 'RateGuru repair target (apply mode, %s)\n' "${TARGET_ID}"
+
+    # Cheap, side-effect-free validation happens BEFORE the lock, so an
+    # obviously wrong request never waits behind a running deployment only to
+    # be rejected. It is deliberately not the authoritative check: a deploy,
+    # rollback or restore can finish between here and the lock, so everything
+    # this observes is read again under the lock and it is that second reading
+    # the repair is built on.
+    if deployed_target_problem; then
+        fail "refusing to repair ${TARGET_ID}: ${DEPLOYED_PROBLEM} — a target with no canonical deployed release needs an explicit deployment or recovery decision, and a repair never picks a release for you"
+    fi
+
+    lock_directory_usable \
+        || fail "refusing to repair ${TARGET_ID}: ${TARGET_ROOT}/locks is not a real directory, so this target's deployment lock cannot be taken. Converge the layout directly first with install-bootstrap-host-layout --apply --target ${TARGET_ID} — a repair that cannot lock the target cannot safely converge it. No mutation was performed"
+
+    action "acquiring the target deployment lock"
+    acquire_deployment_lock "${TARGET_ROOT}"
+
+    # Re-read everything under the lock. A deploy, rollback or restore could
+    # have finished between the inspection above and this point, and the
+    # baseline must describe the state this run actually repairs.
+    action "re-reading the target identity under the lock"
+    apply_gate
+
+    capture_baseline
+    action "baseline: release ${BASELINE_RELEASE} (source ${BASELINE_SOURCE_SHA})"
+
+    if [[ "${LAYOUT_PLANNED}" == true ]]; then
+        converge_child "${HOSTLAYOUT_BIN}"
+        reread_services_contract
+    fi
+
+    if [[ "${SERVICES_PLANNED}" == true ]]; then
+        converge_child "${SERVICES_BIN}"
+    fi
+
+    [[ "${CHANGED}" == true ]] || action "no target-scoped drift to converge"
+
+    restore_target_queue
+
+    action "verifying that nothing outside this target's infrastructure changed"
+    assert_baseline_unchanged
+
+    scheduler_present \
+        || fail "${SCHEDULER_FILE} is still absent after the service convergence — the repair is NOT complete"
+
+    action "health check"
+    "${HEALTH_CHECK_BIN}" --target "${TARGET_ID}" \
+        || fail "health check failed after the repair — the target is not serving correctly, and the repair is NOT complete"
+
+    append_history "${TARGET_ROOT}" repair "${CURRENT_RELEASE}" completed
+
+    action "repair complete"
+
+    printf '\n'
+    printf '========================================================\n'
+    printf 'REPAIR TARGET: %s\n' "${TARGET_ID}"
+    printf 'CHANGED: %s\n' "$(printf '%s' "${CHANGED}" | tr '[:lower:]' '[:upper:]')"
+    printf 'CURRENT RELEASE: %s (unchanged)\n' "${CURRENT_RELEASE}"
+    printf 'SOURCE SHA: %s (unchanged)\n' "${CURRENT_SOURCE_SHA}"
+    printf 'ENVIRONMENT FILE: unchanged\n'
+    printf 'STORAGE STRUCTURE: unchanged\n'
+    printf 'QUEUE: RUNNING\n'
+    printf 'SCHEDULER: present\n'
+    printf 'HEALTH: PASS\n'
+    printf '========================================================\n'
+
+    emit_repair_result completed "${CHANGED}" pass running present
+}
+
+# --- Dispatch -----------------------------------------------------------------
+
+main() {
+    parse_args "$@"
+    require_root_mode
+    resolve_target
+
+    case "${MODE}" in
+        check)
+            run_report || exit 1
+            ;;
+        verify)
+            run_report || exit 1
+
+            # Only reached when the contract is satisfied, so every value below
+            # is an observation that has just been reported as PASS rather than
+            # an assumption about one.
+            emit_repair_result verified false \
+                "$(health_passing && printf 'pass' || printf 'fail')" \
+                "$(queue_program_running && printf 'running' || printf 'stopped')" \
+                "$(scheduler_present && printf 'present' || printf 'absent')"
+            ;;
+        apply)
+            perform_apply
+            ;;
+    esac
+
+    exit 0
+}
+
+# Source-guard: tests source this file and call functions directly without
+# main() auto-running — the same pattern every other operational script uses.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

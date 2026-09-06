@@ -1,0 +1,111 @@
+name: Repair production target
+
+# The production counterpart of repair-staging.yml. Same operator semantics,
+# the same shared action, the same server-side repair-target — a different
+# fixed identity, a different concurrency domain, and one extra gate.
+#
+# IT DOES NOT WORK YET, AND THAT IS THE POINT. tits-guru is lifecycle=planned
+# and unprovisioned. The repair action refuses a non-active target before it
+# uploads anything, and infrastructure/scripts/repair-target refuses it again
+# server-side — so a real run of this workflow fails closed today. It exists now
+# to prove that production will be repaired by exactly the same mechanism once
+# production is provisioned and activated, rather than by a production-shaped
+# procedure invented under pressure during an incident.
+#
+# Nothing here weakens that gate, nothing here edits the registry, this workflow
+# activates nothing, and the production GitHub Environment's own protection
+# rules stay authoritative on top of the confirmation below.
+#
+# There is deliberately no target dropdown anywhere in this repository:
+# "Repair staging target" and "Repair production target" are two buttons whose
+# names say what they do, sharing one implementation underneath.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type exactly "REPAIR tits-guru" to confirm converging production infrastructure
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# The same logical domain every other production target mutation uses: a repair
+# converges the infrastructure a release runs inside, so it must never overlap a
+# production release, rollback, restore or host preparation. cancel-in-progress
+# stays false: a cancelled repair is not an undone repair, and the server-side
+# deployment lock remains the ultimate integrity protection regardless.
+concurrency:
+  group: rateguru-production-release
+  cancel-in-progress: false
+
+jobs:
+  # No GitHub Environment and no secret: the confirmation is judged before the
+  # environment's own protection rules are ever consulted, so an unconfirmed
+  # request never becomes an approval request for a human to rubber-stamp.
+  validate:
+    name: Validate repair request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate the repair request
+        shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+
+          # Deliberately IN ADDITION to the production environment's own
+          # protection rules, not instead of them — one gate proves a human
+          # meant this specific target, the other proves the right humans
+          # approved it.
+          if [[ "${CONFIRMATION}" != "REPAIR tits-guru" ]]; then
+            echo "confirmation must be exactly 'REPAIR tits-guru' to converge production infrastructure" >&2
+            exit 1
+          fi
+
+          echo "Repair request confirmed for tits-guru."
+
+  repair:
+    name: Repair tits-guru
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      # develop, always. The repair tooling is operational code whose job is to
+      # define what "correct" means for this target; it must not be selectable
+      # by an application ref, and above all it is never taken from the release
+      # the target is currently serving — that release is the thing being
+      # repaired around, and it may itself be damaged.
+      - name: Checkout trusted repair tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: develop
+          fetch-depth: 1
+          persist-credentials: false
+
+      # Pinned to the real production target ID, so it fails closed on the
+      # lifecycle gate. Routing production repair at staging-main, or
+      # activating tits-guru to make this pass, would defeat the entire purpose
+      # of adding the workflow now.
+      - name: Repair tits-guru
+        uses: ./.github/actions/repair-rateguru-target
+        with:
+          deployment-target: tits-guru
+          environment: production
+
+          bootstrap-host: ${{ vars.DEPLOY_HOST }}
+          bootstrap-port: ${{ vars.DEPLOY_PORT }}
+
+          # The privileged bootstrap/recovery credential, never DEPLOY_SSH_KEY.
+          # The deploy key is restricted to the narrow rateguru-deploy and
+          # rateguru-rollback sudo wrappers; it cannot converge infrastructure,
+          # and widening it so that it could would remove the separation that
+          # makes an ordinary deployment a small operation.
+          bootstrap-user: ${{ vars.BOOTSTRAP_USER }}
+          bootstrap-ssh-key: ${{ secrets.BOOTSTRAP_SSH_KEY }}
+          bootstrap-known-hosts: ${{ secrets.BOOTSTRAP_KNOWN_HOSTS }}

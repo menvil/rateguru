@@ -21,6 +21,7 @@ offsite-restore-test
 offsite-retention
 prepare-host
 record-nightwatch-deployment
+repair-target
 restore-database
 restore-storage
 restore-target

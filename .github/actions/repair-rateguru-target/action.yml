@@ -1,0 +1,657 @@
+name: Repair RateGuru target
+description: >-
+  Converge one live target's own infrastructure back onto the committed source
+  of truth, by transporting trusted tooling to its host and running the
+  server-side repair-target primitive — without changing the code it serves,
+  its database, its storage or its environment file.
+
+# Transport and invocation only.
+#
+# infrastructure/scripts/repair-target owns every decision this operation
+# makes: what "repaired" means, which installer owns which contract, the lock
+# it takes, the restore and maintenance interlocks, what it refuses to touch,
+# and the proof that it touched none of it. None of that is reimplemented,
+# mirrored or second-guessed in YAML. This action packages the trusted tooling,
+# runs three commands and cleans up after itself.
+#
+# WHAT IT IS NOT. It never deploys: there is deliberately no `ref`, `branch`,
+# `tag`, `source_sha` or `run-migrations` input, no artifact is built, uploaded
+# or downloaded, and no application source is ever involved. It never restores
+# data, and never prepares a host. Repairing a target's infrastructure,
+# deploying code, restoring data and bootstrapping a host are four operations
+# with four different blast radii, and this one cannot perform the other three.
+#
+# NO SECRETS, BY CONSTRUCTION. This action has no material inputs at all — not
+# a Laravel environment file, not authorized_keys, not an rclone config, not
+# Basic Auth hashes, not a TLS certificate or key. That absence IS the design:
+# repair converges what is committed in this repository around material the
+# host already holds. If a host is missing an external prerequisite, the
+# server-side installers report it as a missing prerequisite and the repair
+# fails closed. Nothing here can generate, replace or rotate that material,
+# because nothing here ever carries it.
+#
+# CREDENTIAL SEPARATION. This uses the privileged BOOTSTRAP credential, the
+# same one host preparation uses, and deliberately NOT the deploy credential.
+# The deploy key is restricted to the narrow rateguru-deploy / rateguru-rollback
+# sudo wrappers and cannot converge infrastructure; repair needs root, so it
+# uses the credential that already has its own lifecycle for exactly that. If
+# the environment has no bootstrap credential this action fails rather than
+# falling back to DEPLOY_SSH_KEY — a fallback would quietly widen what the
+# deploy key is for.
+#
+# TRUSTED TOOLING. The bundle is built from whatever the calling workflow
+# checked out, and every caller checks out `develop`. It is never taken from
+# the host's own deployed release: the release under `current` is the thing
+# being repaired around, it may itself be damaged or stale, and running a
+# target's repair from tooling that target happens to be serving would make a
+# broken release able to define what "repaired" means.
+
+inputs:
+  deployment-target:
+    required: true
+    description: >-
+      Deployment target ID from the RateGuru target registry. A structural
+      property of the calling workflow, never operator input.
+
+  environment:
+    required: true
+    description: Environment class this repair runs in (staging or production)
+
+  bootstrap-host:
+    required: true
+    description: >-
+      SSH hostname or IP of the physical host currently serving the target.
+      Deliberately the same DEPLOY_HOST binding ordinary deployment uses: the
+      GitHub Environment is where a logical target is bound to a physical host,
+      and one target has one host at a time.
+
+  bootstrap-port:
+    required: false
+    default: "22"
+    description: SSH server port
+
+  bootstrap-user:
+    required: true
+    description: >-
+      Privileged bootstrap/recovery user. Must be root, or hold passwordless
+      non-interactive sudo; verified before anything is uploaded.
+
+  bootstrap-ssh-key:
+    required: true
+    description: Privileged bootstrap SSH private key, separate from the deployment key
+
+  bootstrap-known-hosts:
+    required: true
+    description: >-
+      Verified known_hosts entry for the bootstrap host. Strict host key
+      checking is non-negotiable here: there is no TOFU, no relaxed host-key
+      policy and no password fallback anywhere in this action.
+
+outputs:
+  repaired:
+    description: "true when repair-target --verify confirmed the target satisfies the repair contract"
+    value: ${{ steps.verify.outputs.repaired }}
+
+  changed:
+    description: "true when this run actually converged something, false when the target was already correct"
+    value: ${{ steps.repair.outputs.changed }}
+
+  current-release:
+    description: "The release the target served before and after the repair — a repair never changes it"
+    value: ${{ steps.verify.outputs['current-release'] }}
+
+  source-sha:
+    description: "The source commit of that release, unchanged by the repair"
+    value: ${{ steps.verify.outputs['source-sha'] }}
+
+runs:
+  using: composite
+
+  steps:
+    # Fixed caller inputs only. Everything checked here is a structural
+    # property of the calling workflow, so a violation is a bug in this
+    # repository rather than an environmental condition — it fails closed.
+    - name: Validate fixed caller inputs
+      shell: bash
+      env:
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        BOOTSTRAP_KEY_PRESENT: ${{ inputs.bootstrap-ssh-key != '' }}
+        BOOTSTRAP_KNOWN_HOSTS_PRESENT: ${{ inputs.bootstrap-known-hosts != '' }}
+      run: |
+        set -Eeuo pipefail
+
+        # Rejects empty, uppercase, slash, whitespace, shell metacharacters and
+        # a flag-shaped value (a leading "-") in one closed character class.
+        # The same expression the deploy, rollback, preparation and
+        # observability actions validate a target with.
+        target_regex='^[a-z0-9]+(-[a-z0-9]+)*$'
+
+        [[ "${DEPLOYMENT_TARGET}" =~ ${target_regex} ]] || {
+          echo "Invalid deployment target: ${DEPLOYMENT_TARGET}" >&2
+          exit 1
+        }
+
+        case "${ENVIRONMENT}" in
+          staging|production)
+            ;;
+          *)
+            echo "environment must be staging or production (got: ${ENVIRONMENT})" >&2
+            exit 1
+            ;;
+        esac
+
+        # A syntactically numeric port is not enough: 0 and anything above
+        # 65535 would sail through and fail later inside every ssh call with a
+        # far less obvious diagnostic.
+        # 10# forces decimal. Bash reads a leading-zero operand inside (( ))
+        # as octal, so a port like 08 would raise "value too great for base",
+        # return non-zero, and be read by this || chain as "the condition did
+        # not hold" — quietly passing validation.
+        if [[ ! "${BOOTSTRAP_PORT}" =~ ^[0-9]{1,5}$ ]] \
+          || (( 10#${BOOTSTRAP_PORT} < 1 )) \
+          || (( 10#${BOOTSTRAP_PORT} > 65535 ))
+        then
+          echo "Invalid bootstrap port (expected 1-65535): ${BOOTSTRAP_PORT}" >&2
+          exit 1
+        fi
+
+        for required_var in BOOTSTRAP_HOST BOOTSTRAP_USER; do
+          if [[ -z "${!required_var}" ]]; then
+            echo "${required_var} is not configured for the ${ENVIRONMENT} environment" >&2
+            exit 1
+          fi
+        done
+
+        if [[ "${BOOTSTRAP_KEY_PRESENT}" != "true" ]] \
+          || [[ "${BOOTSTRAP_KNOWN_HOSTS_PRESENT}" != "true" ]]
+        then
+          echo "The ${ENVIRONMENT} environment has no bootstrap SSH credential." >&2
+          echo "Repair deliberately refuses to fall back to the deployment key: that key is restricted to the deploy wrappers, cannot converge infrastructure, and must not be widened into a recovery credential." >&2
+          exit 1
+        fi
+
+    # The server-side lifecycle gate stays authoritative, and it is what
+    # actually protects the host. This is the same question asked one step
+    # earlier, on the runner, so that a run against a lifecycle=planned target
+    # is refused before any tooling is uploaded and before the privileged
+    # credential is used against the host at all.
+    #
+    # It asks the repository's own `targets` CLI, against the committed
+    # registry in the trusted checkout — no lifecycle rule is reimplemented here.
+    - name: Validate the target lifecycle before anything is uploaded
+      shell: bash
+      env:
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+      run: |
+        set -Eeuo pipefail
+
+        registry="${GITHUB_WORKSPACE}/infrastructure/config/deployment-targets.json"
+        targets_cli="${GITHUB_WORKSPACE}/infrastructure/scripts/targets"
+
+        test -x "${targets_cli}"
+        test -f "${registry}"
+
+        if ! target_json="$("${targets_cli}" show --target "${DEPLOYMENT_TARGET}" --file "${registry}" 2>&1)"; then
+          echo "${target_json}" >&2
+          echo "Unknown or unusable deployment target: ${DEPLOYMENT_TARGET}" >&2
+          exit 1
+        fi
+
+        lifecycle="$(printf '%s' "${target_json}" | jq -r '.lifecycle // empty')"
+
+        if [[ "${lifecycle}" != "active" ]]; then
+          echo "Target ${DEPLOYMENT_TARGET} has lifecycle=${lifecycle:-unknown}, not active." >&2
+          echo "Repair is refused before any tooling is uploaded. A repair converges the infrastructure of a target that is already live; activating a target is a deliberate registry change in its own right, never a side effect of repairing one." >&2
+          exit 1
+        fi
+
+        echo "Target ${DEPLOYMENT_TARGET}: lifecycle=active — repair may proceed"
+
+    - name: Configure bootstrap SSH
+      shell: bash
+      env:
+        BOOTSTRAP_SSH_KEY: ${{ inputs.bootstrap-ssh-key }}
+        BOOTSTRAP_KNOWN_HOSTS: ${{ inputs.bootstrap-known-hosts }}
+      run: |
+        set -Eeuo pipefail
+
+        key_path="${RUNNER_TEMP}/rateguru_repair_key"
+        known_hosts_path="${RUNNER_TEMP}/rateguru_repair_known_hosts"
+
+        install -m 0600 /dev/null "${key_path}"
+        install -m 0600 /dev/null "${known_hosts_path}"
+
+        printf '%s\n' "${BOOTSTRAP_SSH_KEY}" > "${key_path}"
+        printf '%s\n' "${BOOTSTRAP_KNOWN_HOSTS}" > "${known_hosts_path}"
+
+        ssh-keygen -y -f "${key_path}" >/dev/null
+
+        {
+          echo "RATEGURU_BOOTSTRAP_SSH_KEY_PATH=${key_path}"
+          echo "RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH=${known_hosts_path}"
+        } >> "${GITHUB_ENV}"
+
+    # Establishes the privileged path once, so every later step uses the same
+    # prefix and no step has to guess. Root gets an empty prefix; a sudoer gets
+    # `sudo -n`, which fails immediately rather than waiting on a password
+    # prompt that would hang a non-interactive run.
+    - name: Verify privileged access on the host
+      id: access
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+      run: |
+        set -Eeuo pipefail
+
+        ssh_bootstrap() {
+          ssh \
+            -p "${BOOTSTRAP_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+            "$@"
+        }
+
+        remote_uid="$(ssh_bootstrap 'id -u')"
+
+        if [[ "${remote_uid}" == "0" ]]; then
+          privileged_prefix=""
+          echo "Bootstrap user ${BOOTSTRAP_USER} is root."
+        elif ssh_bootstrap 'sudo -n true' >/dev/null 2>&1; then
+          privileged_prefix="sudo -n"
+          echo "Bootstrap user ${BOOTSTRAP_USER} holds passwordless non-interactive sudo."
+        else
+          echo "Bootstrap user ${BOOTSTRAP_USER} is neither root nor a passwordless sudoer." >&2
+          echo "Repair requires root; nothing was uploaded and nothing was changed." >&2
+          exit 1
+        fi
+
+        echo "RATEGURU_PRIVILEGED_PREFIX=${privileged_prefix}" >> "${GITHUB_ENV}"
+
+    # Only infrastructure/ — repair-target and the installers it delegates to
+    # resolve every file they need beneath that one directory, and nothing else
+    # in this repository has any business on the host. The application is
+    # emphatically not part of the bundle: this operation never touches code.
+    - name: Package trusted repair bundle
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+
+        bundle_path="${RUNNER_TEMP}/rateguru-repair-bundle.tar.gz"
+
+        test -d "${GITHUB_WORKSPACE}/infrastructure/scripts"
+        test -x "${GITHUB_WORKSPACE}/infrastructure/scripts/repair-target"
+        test -x "${GITHUB_WORKSPACE}/infrastructure/scripts/install-bootstrap-host-layout"
+        test -x "${GITHUB_WORKSPACE}/infrastructure/scripts/install-bootstrap-services"
+
+        tar \
+          --create \
+          --gzip \
+          --file "${bundle_path}" \
+          --directory "${GITHUB_WORKSPACE}" \
+          infrastructure
+
+        chmod 0600 "${bundle_path}"
+
+        echo "RATEGURU_BUNDLE_PATH=${bundle_path}" >> "${GITHUB_ENV}"
+        echo "Bundle contents: $(tar -tzf "${bundle_path}" | wc -l) files from infrastructure/"
+
+    # The remote layout, and the one place a path is chosen:
+    #
+    #   ~/.rateguru-repair-<run>    0700, owned by the bootstrap user — scp can
+    #                               only ever write as that user, so the bundle
+    #                               lands here first;
+    #   /root/rateguru-repair-<run> 0700 root:root — where it is moved before
+    #                               anything runs from it.
+    #
+    # The run ID and attempt make the name unique without any randomness, so a
+    # retry never collides with its own earlier attempt.
+    - name: Upload the trusted repair bundle
+      id: upload
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -Eeuo pipefail
+
+        run_tag="${RUN_ID}-${RUN_ATTEMPT}"
+        staging_dir=".rateguru-repair-${run_tag}"
+        remote_root="/root/rateguru-repair-${run_tag}"
+
+        {
+          echo "RATEGURU_REMOTE_STAGING_DIR=${staging_dir}"
+          echo "RATEGURU_REMOTE_ROOT=${remote_root}"
+        } >> "${GITHUB_ENV}"
+
+        ssh_bootstrap() {
+          ssh \
+            -p "${BOOTSTRAP_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+            "$@"
+        }
+
+        printf -v prepare_staging \
+          'umask 077 && rm -rf %q && mkdir -p %q' \
+          "${staging_dir}" "${staging_dir}"
+
+        ssh_bootstrap "${prepare_staging}"
+
+        scp \
+          -P "${BOOTSTRAP_PORT}" \
+          -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+          "${RATEGURU_BUNDLE_PATH}" \
+          "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}:${staging_dir}/bundle.tar.gz"
+
+        printf -v install_remote \
+          'set -Eeuo pipefail; umask 077; %s install -d -m 0700 -o root -g root %q && %s tar -xzpf %q/bundle.tar.gz -C %q && %s chown -R root:root %q && rm -rf %q' \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${remote_root}" \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${staging_dir}" "${remote_root}" \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${remote_root}" \
+          "${staging_dir}"
+
+        ssh_bootstrap "bash -c ${install_remote@Q}"
+
+        echo "Trusted tooling installed under ${remote_root} (root-only)."
+
+    # The plan, before anything is converged. Read-only on the host, and its
+    # exit status is deliberately not fatal here: "repair required" is exit 1
+    # and is the normal reason an operator ran this workflow. The apply below
+    # is the authoritative gate, and it re-reads everything under the target's
+    # deployment lock.
+    - name: Inspect the target
+      id: inspect
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+      run: |
+        set -Eeuo pipefail
+
+        # A fixed argv built as a Bash array and quoted element-wise, never an
+        # interpolated shell string. repair-target itself accepts only a closed
+        # flag set and no free-text command of any kind.
+        remote_command=(
+          ${RATEGURU_PRIVILEGED_PREFIX}
+          "${RATEGURU_REMOTE_ROOT}/infrastructure/scripts/repair-target"
+          --check
+          --target "${DEPLOYMENT_TARGET}"
+        )
+
+        set +e
+        inspection_output="$(
+          ssh \
+            -p "${BOOTSTRAP_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+            "${remote_command[@]@Q}" 2>&1
+        )"
+        inspection_status=$?
+        set -e
+
+        printf '%s\n' "${inspection_output}"
+
+        # Above 1 the inspection could not even establish the target's state,
+        # which is a tooling or connectivity failure rather than drift.
+        if (( inspection_status > 1 )); then
+          echo "The read-only inspection failed with exit ${inspection_status}; nothing was changed." >&2
+          exit "${inspection_status}"
+        fi
+
+        {
+          echo "## Repair plan"
+          echo
+          echo '```text'
+          awk '/^SUMMARY$/ { collecting = 1 } collecting { print }' <<<"${inspection_output}"
+          echo '```'
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+    - name: Repair the target
+      id: repair
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+      run: |
+        set -Eeuo pipefail
+
+        remote_command=(
+          ${RATEGURU_PRIVILEGED_PREFIX}
+          "${RATEGURU_REMOTE_ROOT}/infrastructure/scripts/repair-target"
+          --apply
+          --target "${DEPLOYMENT_TARGET}"
+        )
+
+        # rateguru_repair_result OUTPUT EXPECTED_STATUS — the one
+        # machine-readable line, validated.
+        #
+        # Every composite step is its own shell, so this is defined in each
+        # step that needs it rather than shared. It counts the matches instead
+        # of taking the first: the primitive's contract is EXACTLY one result
+        # line per terminal success, and a `grep -m1` would accept two without
+        # a word — which is the shape a bug in that contract would take.
+        rateguru_repair_result() {
+          local output="$1" expected="$2" lines count json
+
+          lines="$(grep '^RATEGURU_REPAIR_RESULT=' <<<"${output}" || true)"
+          count="$(grep -c '^RATEGURU_REPAIR_RESULT=' <<<"${output}" || true)"
+
+          if [[ "${count}" != "1" ]]; then
+            echo "Expected exactly one RATEGURU_REPAIR_RESULT line, got ${count}." >&2
+            exit 1
+          fi
+
+          json="${lines#RATEGURU_REPAIR_RESULT=}"
+
+          jq -e --arg status "${expected}" \
+            'type == "object" and .status == $status' <<<"${json}" >/dev/null || {
+            echo "The machine-readable repair result is not a ${expected} result: ${json}" >&2
+            exit 1
+          }
+
+          printf '%s' "${json}"
+        }
+
+        repair_output="$(
+          ssh \
+            -p "${BOOTSTRAP_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+            "${remote_command[@]@Q}"
+        )"
+
+        printf '%s\n' "${repair_output}"
+
+        # Whether this run converged anything is known ONLY here. The
+        # verification below is a fresh read-only invocation, so its own
+        # `changed` is false by construction — reporting that as the outcome
+        # would tell an operator "changed: false" after a real repair.
+        result_json="$(rateguru_repair_result "${repair_output}" completed)"
+
+        echo "changed=$(jq -r '.changed' <<<"${result_json}")" >> "${GITHUB_OUTPUT}"
+
+    # A second, independent invocation rather than a claim inherited from the
+    # apply above: "repaired" means the read-only verification passes on the
+    # host as it stands now.
+    #
+    # Every reported value comes from the one machine-readable line the
+    # primitive prints, never from prose in its report. Parsing a human report
+    # would make every wording change a silent behaviour change here.
+    - name: Verify the repaired target
+      id: verify
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        # Whether anything was converged is the apply's answer, not this
+        # read-only invocation's.
+        RATEGURU_REPAIR_CHANGED: ${{ steps.repair.outputs.changed }}
+      run: |
+        set -Eeuo pipefail
+
+        remote_command=(
+          ${RATEGURU_PRIVILEGED_PREFIX}
+          "${RATEGURU_REMOTE_ROOT}/infrastructure/scripts/repair-target"
+          --verify
+          --target "${DEPLOYMENT_TARGET}"
+        )
+
+        # rateguru_repair_result OUTPUT EXPECTED_STATUS — the one
+        # machine-readable line, validated.
+        #
+        # Every composite step is its own shell, so this is defined in each
+        # step that needs it rather than shared. It counts the matches instead
+        # of taking the first: the primitive's contract is EXACTLY one result
+        # line per terminal success, and a `grep -m1` would accept two without
+        # a word — which is the shape a bug in that contract would take.
+        rateguru_repair_result() {
+          local output="$1" expected="$2" lines count json
+
+          lines="$(grep '^RATEGURU_REPAIR_RESULT=' <<<"${output}" || true)"
+          count="$(grep -c '^RATEGURU_REPAIR_RESULT=' <<<"${output}" || true)"
+
+          if [[ "${count}" != "1" ]]; then
+            echo "Expected exactly one RATEGURU_REPAIR_RESULT line, got ${count}." >&2
+            exit 1
+          fi
+
+          json="${lines#RATEGURU_REPAIR_RESULT=}"
+
+          jq -e --arg status "${expected}" \
+            'type == "object" and .status == $status' <<<"${json}" >/dev/null || {
+            echo "The machine-readable repair result is not a ${expected} result: ${json}" >&2
+            exit 1
+          }
+
+          printf '%s' "${json}"
+        }
+
+        verification_output="$(
+          ssh \
+            -p "${BOOTSTRAP_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+            "${remote_command[@]@Q}"
+        )"
+
+        printf '%s\n' "${verification_output}"
+
+        result_json="$(rateguru_repair_result "${verification_output}" verified)"
+
+        current_release="$(jq -r '.current_release' <<<"${result_json}")"
+        source_sha="$(jq -r '.source_sha' <<<"${result_json}")"
+        changed="${RATEGURU_REPAIR_CHANGED}"
+        health="$(jq -r '.health' <<<"${result_json}")"
+        queue="$(jq -r '.queue' <<<"${result_json}")"
+        scheduler="$(jq -r '.scheduler' <<<"${result_json}")"
+
+        {
+          echo "repaired=true"
+          echo "current-release=${current_release}"
+          echo "source-sha=${source_sha}"
+        } >> "${GITHUB_OUTPUT}"
+
+        {
+          echo "## Target repaired"
+          echo
+          echo "- Target: \`${DEPLOYMENT_TARGET}\`"
+          echo "- Environment: \`${ENVIRONMENT}\`"
+          echo "- Release: \`${current_release}\` (source \`${source_sha}\`) — unchanged"
+          echo "- Changed by this run: \`${changed}\`"
+          echo "- Health: \`${health}\` · Queue: \`${queue}\` · Scheduler: \`${scheduler}\`"
+          echo
+          echo "The target's own infrastructure now matches the committed source of truth. The same release is still deployed, the database and storage were never touched, no migration ran and the environment file was not written — that is the correct end state of a repair."
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+    # Runs on failure too. Uploaded tooling must never outlive the run that
+    # uploaded it, whatever happened in between.
+    - name: Remove the remote repair bundle
+      if: ${{ always() }}
+      shell: bash
+      env:
+        BOOTSTRAP_HOST: ${{ inputs.bootstrap-host }}
+        BOOTSTRAP_PORT: ${{ inputs.bootstrap-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+      run: |
+        set -Eeuo pipefail
+
+        if [[ -z "${RATEGURU_REMOTE_ROOT:-}" ]]; then
+          echo "Nothing was uploaded; no remote cleanup required."
+          exit 0
+        fi
+
+        printf -v cleanup_command \
+          '%s rm -rf %q && rm -rf %q' \
+          "${RATEGURU_PRIVILEGED_PREFIX:-}" "${RATEGURU_REMOTE_ROOT}" "${RATEGURU_REMOTE_STAGING_DIR:-/nonexistent}"
+
+        # Cleanup failure is reported loudly but never masks the real outcome
+        # of the run; the operator needs to see which failure came first.
+        if ssh \
+          -p "${BOOTSTRAP_PORT}" \
+          -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o ConnectTimeout=15 \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+          "${BOOTSTRAP_USER}@${BOOTSTRAP_HOST}" \
+          "bash -c ${cleanup_command@Q}"
+        then
+          echo "Removed ${RATEGURU_REMOTE_ROOT} and the upload staging directory."
+        else
+          echo "WARNING: could not remove ${RATEGURU_REMOTE_ROOT} from the host. Remove it manually." >&2
+        fi
+
+    - name: Remove temporary local files
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        rm -f \
+          "${RATEGURU_BUNDLE_PATH:-}" \
+          "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH:-}" \
+          "${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH:-}"

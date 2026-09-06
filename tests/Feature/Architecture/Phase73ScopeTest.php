@@ -336,17 +336,14 @@ it('reaches restore only through one wrapper, granted to the existing deploy acc
 });
 
 // =============================================================================
-// No Repair, no Recover, no production activation
+// No Recover, no production activation
 // =============================================================================
 
-it('implements no Repair Target and no Recover Host', function () {
+it('implements no Recover Host', function () {
     foreach ([
-        'infrastructure/scripts/repair-target',
         'infrastructure/scripts/recover-host',
-        '.github/workflows/repair-staging.yml',
         '.github/workflows/recover-staging-host.yml',
         '.github/workflows/recover-production-host.yml',
-        '.github/actions/repair-rateguru/action.yml',
         '.github/actions/recover-rateguru-host/action.yml',
     ] as $path) {
         expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to a later phase, not 7.3");

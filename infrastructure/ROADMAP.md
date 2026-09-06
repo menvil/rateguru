@@ -1157,12 +1157,81 @@ Slices, in order:
    PASS and the guard cleared). CI proves the structure and every failure
    path; only a real run proves the pipeline, so this slice is implemented,
    awaiting real GitHub staging acceptance rather than accepted.
-5. **7.5 Repair Target.** The host is alive, but one target's runtime,
-   perimeter or release state is broken or has drifted. Reconstruct that
-   target — identities, filesystem, perimeter, services, current release —
-   without rebuilding the whole VPS and without touching unrelated targets
-   or projects. *Future work only.* *Acceptance:* a deliberately damaged
-   staging target is repaired in place and verifies clean.
+5. **7.5 Repair Target — implemented, awaiting real GitHub staging
+   acceptance.** The host is alive, the host runtime is intact, the target is
+   registered, active and has a real deployed release — and only that target's
+   OWN infrastructure has drifted. Converge it back onto what is committed,
+   without rebuilding the VPS, without touching another target, and above all
+   without changing the code it serves or the data it holds:
+
+       BROKEN TARGET + HEALTHY HOST + EXISTING DATA/RELEASE
+         -> target-scoped infrastructure converged
+         -> same code, same database, same storage, same .env, healthy runtime
+
+   What landed:
+
+   - **Both bootstrap installers gained an optional `--target`.**
+     `install-bootstrap-host-layout` and `install-bootstrap-services` now
+     narrow the SAME contract to one active target: its identities, its
+     memberships, its directory entries, its Nginx site and enabled link, its
+     PHP-FPM pool, its Supervisor program, its scheduler cron, its
+     public-storage ACL. Everything host-wide — the host roots, the SSH deploy
+     restriction, the operations and perimeter families, mail capture, the
+     base services — stops being theirs to converge and becomes a HOST-REQ
+     prerequisite they only inspect. Without `--target` both are byte-for-byte
+     the Phase 5 bootstrap they have always been, and a test asserts exactly
+     that first.
+   - **One orchestrator, no second implementation.**
+     `infrastructure/scripts/repair-target` (`--check` / `--apply` /
+     `--verify`) validates the target, refuses everything unsafe BEFORE the
+     first mutation, takes the target's own deployment lock, re-reads the
+     release identity under it, and then delegates every convergence to the
+     installer that already owns that contract. It contains no layout or
+     service check of its own — a test enumerates the vocabulary that must
+     never appear in it.
+   - **What it refuses, and why each refusal is somebody else's decision.** A
+     restore guard in any state (`held` points at `mode=continue-held`,
+     `in-progress` at resolving the restore, `failed-held` at manual
+     recovery); a deliberate maintenance window with no guard, because a
+     repair never runs `artisan up`; a target with no canonical deployed
+     release, because picking one would be inventing state; host-level damage,
+     because that is Prepare Host; and drift that is never converged
+     automatically. Blockers are collected and reported together, so a repair
+     never half-converges a target nobody inspected.
+   - **It proves what it did not touch.** `current`, `previous`, the release
+     identity, the `shared/.env` fingerprint and the shared-storage structure
+     are captured before the first mutation and asserted afterwards; any
+     change fails the repair. There is no database code path at all — no
+     credential is read, no connection opened, no migration ever run — so
+     "a repair never touches the database" is structural, and reachability is
+     proven end to end by the application's own health endpoint instead.
+   - **It carries no secrets, by construction.**
+     `.github/actions/repair-rateguru-target` has no material inputs: no
+     Laravel environment file, no authorized_keys, no rclone config, no Basic
+     Auth, no TLS material. A repair converges what this repository commits
+     around material the host already holds; a missing external prerequisite
+     is reported and fails closed, never generated or replaced.
+   - **Two named operator workflows, no target dropdown.**
+     `repair-staging.yml` (no inputs at all, fixed `staging-main`, concurrency
+     `rateguru-staging-deployment`) and `repair-production.yml` (fixed
+     `tits-guru`, concurrency `rateguru-production-release`, plus a typed
+     `REPAIR tits-guru` confirmation checked before any environment or SSH).
+     Both use the privileged BOOTSTRAP credential and deliberately refuse to
+     fall back to `DEPLOY_SSH_KEY`, and both build the trusted tooling bundle
+     from `develop` — never from the release the target is currently serving,
+     which is the thing being repaired around and may itself be damaged.
+   - **A machine-readable repair result.** `repair-target` prints exactly one
+     `RATEGURU_REPAIR_RESULT={...}` line on each terminal success, carrying
+     identity only. The workflow branches on that object, never on prose.
+
+   See [`runbooks/repair-target.md`](runbooks/repair-target.md).
+   *Acceptance:* a deliberately damaged staging target — a wrong mode on a
+   target directory, a removed Nginx enabled link, a deleted scheduler cron
+   and a stopped queue — is repaired in place through the GitHub workflow and
+   verifies clean, with `current`, `previous` and `shared/.env` byte-identical
+   afterwards. CI proves the structure and every refusal path; only a real run
+   proves the pipeline, so this slice is implemented, awaiting real GitHub
+   staging acceptance rather than accepted.
 6. **7.6 Recover Host.** Full replacement-server recovery: new Ubuntu VPS →
    Prepare Host (7.2) → recover secrets/environment → restore database and
    storage (7.3) → rebuild the application from the backup's own

@@ -1,0 +1,92 @@
+name: Repair staging target
+
+# Converge the staging target's OWN infrastructure back onto what is committed
+# in this repository, without changing the code it serves or the data it holds.
+#
+# The situation this button is for: the VPS is alive, the host runtime is
+# intact, staging-main is registered and active and has a real deployed
+# release — and only the target's own infrastructure has drifted. A wrong owner
+# or mode on a target directory, a lost code-group membership, a damaged Nginx
+# vhost or a missing enabled symlink, a PHP-FPM pool or Supervisor program that
+# no longer matches what is committed, an absent scheduler cron, a wiped
+# public-storage ACL, a queue that will not run because of any of those.
+#
+# It is deliberately NOT the button for anything else:
+#
+#   Deploy staging          the CODE should change
+#   Rollback staging        the code should go back
+#   Restore staging         the DATA is wrong
+#   Prepare staging host    the host itself is new or bare
+#
+# Manual-only, and never automatic. Nothing pushes to this workflow, nothing
+# schedules it, and no other workflow calls it: converging a live target's
+# infrastructure is an operator decision taken while looking at a specific
+# broken target.
+#
+# There are deliberately NO INPUTS. The target is fixed to staging-main here —
+# an operator picks the workflow that names their environment rather than
+# selecting a target from a dropdown, exactly as with deploy, rollback, restore
+# and host preparation. There is no "mode", because a repair has exactly one
+# meaning; and no "force" of any kind, because every refusal this operation can
+# make is a refusal an operator must not be able to click past.
+#
+# NO SECRET MATERIAL IS SENT. This workflow passes no Laravel environment file,
+# no authorized_keys, no rclone config, no Basic Auth hashes and no TLS
+# material — the repair action has no inputs to carry them. A repair converges
+# what this repository commits, around material the host already holds. When a
+# host is missing an external prerequisite, the server-side installers report
+# that as a missing prerequisite and the run fails closed; nothing here can
+# generate or replace it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The same logical domain every other staging target mutation uses: a repair
+# converges the infrastructure a release runs inside, so it must never overlap
+# a staging deployment, rollback, restore or host preparation. The server-side
+# deployment lock is the ultimate protection, and this keeps two runs from
+# queueing on it in the first place. cancel-in-progress stays false: a
+# cancelled repair is not an undone repair.
+concurrency:
+  group: rateguru-staging-deployment
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: Repair staging-main
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+
+    steps:
+      # develop, always. The repair tooling is operational code whose job is to
+      # define what "correct" means for this target; it must not be selectable
+      # by an application ref, and above all it is never taken from the release
+      # the target is currently serving — that release is the thing being
+      # repaired around, and it may itself be damaged.
+      - name: Checkout trusted repair tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: develop
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Repair staging-main
+        uses: ./.github/actions/repair-rateguru-target
+        with:
+          deployment-target: staging-main
+          environment: staging
+
+          bootstrap-host: ${{ vars.DEPLOY_HOST }}
+          bootstrap-port: ${{ vars.DEPLOY_PORT }}
+
+          # The privileged bootstrap/recovery credential, never DEPLOY_SSH_KEY.
+          # The deploy key is restricted to the narrow rateguru-deploy and
+          # rateguru-rollback sudo wrappers; it cannot converge infrastructure,
+          # and widening it so that it could would remove the separation that
+          # makes an ordinary deployment a small operation.
+          bootstrap-user: ${{ vars.BOOTSTRAP_USER }}
+          bootstrap-ssh-key: ${{ secrets.BOOTSTRAP_SSH_KEY }}
+          bootstrap-known-hosts: ${{ secrets.BOOTSTRAP_KNOWN_HOSTS }}
