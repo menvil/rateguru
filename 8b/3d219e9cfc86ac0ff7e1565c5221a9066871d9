@@ -1,0 +1,65 @@
+tests/Feature/Architecture/InstallBootstrapHostLayoutTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 641,676,877,965,1079,1117,1449,1497,1642,1771
+infrastructure/scripts/bootstrap-host-preflight
+  s_015e6e963c56c6::t_a5434950fa06e8 22,897
+tests/Feature/Architecture/InstallBootstrapServicesTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 687,733,835,866,901,923,1515,1800
+tests/Feature/Architecture/ProductionReleaseWorkflowTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 112
+infrastructure/scripts/targets
+  s_015e6e963c56c6::t_a5434950fa06e8 29
+tests/Feature/Architecture/ReleaseBookkeepingTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 107-112
+tests/Feature/Docs/Phase6BNightwatchRunbookTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 6,143,206,208
+tests/Feature/Architecture/BootstrapHostPreflightTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 1346
+tests/Feature/Architecture/RestoreServerPrimitivesScopeTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 6,9,11-15,62,142,449,479,522
+.github/workflows/release.yml
+  s_015e6e963c56c6::t_a5434950fa06e8 266
+tests/Feature/Architecture/InstallBootstrapRuntimeTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 25,897,938,1147,1165,1426,1648,1977
+tests/Feature/Architecture/InstallTargetOperationsTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 6
+infrastructure/scripts/install-target-prerequisites
+  s_015e6e963c56c6::t_a5434950fa06e8 741-742
+infrastructure/config/wrappers/rateguru-nightwatch-deployment
+  s_015e6e963c56c6::t_a5434950fa06e8 22
+tests/Feature/Architecture/BuildRateGuruActionTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 7,149
+CLAUDE.md
+  s_015e6e963c56c6::t_a5434950fa06e8 42-44
+tests/Feature/Architecture/DeploymentObservabilityScopeTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 7-8,10-14,25,48,62,112,117,131
+infrastructure/config/sudoers/rateguru-nightwatch-deployment
+  s_015e6e963c56c6::t_a5434950fa06e8 4
+infrastructure/ROADMAP.md
+  s_015e6e963c56c6::t_a5434950fa06e8 554
+infrastructure/scripts/install-bootstrap-runtime
+  s_015e6e963c56c6::t_a5434950fa06e8 124,220,970,972
+infrastructure/scripts/install-nightwatch-agent
+  s_015e6e963c56c6::t_a5434950fa06e8 626
+tests/Feature/Architecture/RollbackRateGuruActionTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 7
+tests/Feature/Docs/Phase6SentryRunbookTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 6
+tests/Feature/Architecture/RollbackProductionWorkflowTest.php
+  s_015e6e963c56c6::t_a5434950fa06e8 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8b3d219e9cfc86ac0ff7e1565c5221a9066871d9",
+  "prompts": {},
+  "sessions": {
+    "s_015e6e963c56c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d7f5ab7-8830-4ed4-b056-647d1bdeaf21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Moroz <menvil.menvil@gmail.com>"
+    }
+  }
+}
