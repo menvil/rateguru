@@ -720,6 +720,28 @@ it('leaves the prepared canonical state untouched when staging fails', function 
 // Activation failure and compensation
 // =============================================================================
 
+it('puts the scheduler back when a failure lands after the hold but before any activation', function () {
+    $scratch = restoreScratchDir();
+
+    try {
+        recoveryFixture($scratch);
+
+        // The FIRST catalog statement of activation — the connection barrier —
+        // is unreachable, so the run fails with the runtime already held and
+        // nothing canonical replaced.
+        $result = recoveryApply($scratch, ['RGTEST_RENAME_FAIL_TO_PREFIX' => 'rateguru_pre_']);
+
+        expect($result['exit'])->not->toBe(0);
+
+        // Held, then released: the machine is a prepared PRE_DEPLOY host again.
+        expect(File::get($scratch.'/supervisor.log'))->toContain('supervisorctl stop parity-queue:*');
+        expect(File::exists($scratch.'/cron.d/parity-scheduler'))->toBeTrue();
+        expect(recoveryGuard($scratch))->toBeNull();
+    } finally {
+        removeScratchDir($scratch);
+    }
+});
+
 it('returns a failed activation to the prepared PRE_DEPLOY state', function () {
     $scratch = restoreScratchDir();
 

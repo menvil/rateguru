@@ -276,7 +276,7 @@ resolve_recover_subject() {
 MAIN_BASHPID=""
 RECOVERY_TERMINAL=false
 CURRENT_STEP="start"
-MUTATION_STAGE=none          # none | staged | activating | activated | data-complete
+MUTATION_STAGE=none          # none | staged | held | activating | activated | data-complete
 HOLD_UNCONFIRMED=false
 COMPENSATION_STATUS="not-required"
 OPERATION_STARTED_AT=""
@@ -1182,11 +1182,24 @@ handle_recovery_exit() {
 
     case "${MUTATION_STAGE}" in
         none|staged)
-            # Nothing canonical was ever replaced. Remove the staged copies so
-            # a failed attempt leaves no temporary database or half-extracted
-            # tree behind on the replacement host.
+            # Nothing canonical was ever replaced, and the runtime was never
+            # touched. Remove the staged copies so a failed attempt leaves no
+            # temporary database or half-extracted tree behind.
             discard_staged_artifacts
             status="failed"
+            ;;
+        held)
+            # The runtime was held, but nothing canonical was replaced. Put the
+            # scheduler back so the machine is a prepared PRE_DEPLOY host again;
+            # the queue stays STOPPED, because it was not running before.
+            discard_staged_artifacts
+
+            if release_scheduler_entry; then
+                status="failed"
+            else
+                HOLD_UNCONFIRMED=true
+                status="failed-held"
+            fi
             ;;
         activating|activated)
             if compensate_activation; then
@@ -1219,20 +1232,15 @@ handle_recovery_exit() {
     esac
 
     # The guard is on disk before any activation can fail, so the only question
-    # here is whether this outcome earned its removal. It did exactly when the
-    # prepared state is provably back: the activation never began, or
-    # compensation put it back. Anything else keeps it, re-labelled.
+    # here is whether this outcome earned its removal — and the outcome is what
+    # decides, not the stage it happened in. `failed` means nothing canonical
+    # was replaced and the runtime is back; `failed-recovered` means
+    # compensation put both back. Anything else keeps the guard, re-labelled
+    # with what actually happened.
     if [[ "${RECOVERY_GUARD_WRITTEN}" == true ]]; then
-        case "${MUTATION_STAGE}" in
-            none|staged)
+        case "${status}" in
+            failed|failed-recovered)
                 clear_recovery_guard || true
-                ;;
-            activating|activated)
-                if [[ "${COMPENSATION_STATUS}" == "complete" ]]; then
-                    clear_recovery_guard || true
-                else
-                    write_recovery_guard "${status}" || true
-                fi
                 ;;
             *)
                 write_recovery_guard "${status}" || true
@@ -1427,6 +1435,7 @@ perform_recovery() {
     # environment comparison, the pg_restore, the extraction — fails with the
     # prepared machine's own runtime exactly as Prepare Host left it.
     step "hold the target runtime"
+    MUTATION_STAGE=held
     hold_scheduler_entry
     stop_queue_program
 
