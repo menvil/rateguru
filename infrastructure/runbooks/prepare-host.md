@@ -47,7 +47,7 @@ Prepare Host is therefore **not**:
 | a rollback | `Rollback staging` / `Rollback production` |
 | a data restore | Phase 7.3 — Restore Target Data |
 | a drift repair | Phase 7.5 — Repair Target |
-| replacement-server recovery | Phase 7.6 — Recover Host |
+| replacement-server recovery | Recover Host — [`recover-host.md`](recover-host.md) |
 | production activation | Phase 8 |
 
 ## Operator usage
@@ -401,10 +401,20 @@ restore and recover operations will join. `Prepare production host` runs in
 orchestration on top of, never a replacement for, the server-side deployment
 lock.
 
-## Future phases
+## What builds on this
 
-Restore Target Data (7.3), Repair Target (7.5) and Recover Host (7.6) build
-on this operation and are explicitly out of scope here. Recovery will rebuild
-a lost application from the `source_sha` every backup already carries in its
-`release.json`, through the same single build implementation a normal release
-uses — see [`../ROADMAP.md`](../ROADMAP.md).
+Restore Target Data, Repair Target and Recover Host all build on this
+operation and are explicitly out of scope here.
+
+Recover Host is the closest neighbour, and the boundary is worth stating
+plainly: a recovery REQUIRES a prepared host and refuses to run without one —
+it runs `prepare-host --verify` as its first precondition. It never prepares
+one. Preparation stays the owner of packages, identities, layout,
+Nginx/FPM/Supervisor/cron, external material, `shared/.env`,
+`authorized_keys`, rclone, TLS, Basic Auth and the empty database; recovery
+fills that prepared, empty target with data and code and touches none of it.
+
+A recovery rebuilds a lost application from the `source_sha` every backup
+already carries in its `release.json`, through the same single build
+implementation a normal release uses — there is no durable artifact archive.
+See [`recover-host.md`](recover-host.md).

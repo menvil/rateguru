@@ -46,7 +46,14 @@ and are then never read again. A live restore therefore never changes
 `shared/.env`, `rclone.conf`, TLS material, `authorized_keys`, the Nginx
 site, the PHP-FPM pool, the Supervisor program, the installed infrastructure
 under `/home/www/rateguru/bin`, or the `current` / `previous` release links.
-Those belong to Recover Host and Repair Target.
+Those belong to Recover Host ([`recover-host.md`](recover-host.md)) and Repair
+Target ([`repair-target.md`](repair-target.md)).
+
+The line between this operation and a recovery is structural rather than a
+matter of judgement: a live restore REQUIRES a deployed target and refuses one
+with no `current`, and a host recovery REQUIRES an empty one and refuses a
+target that has a `current` at all. Their guards are mutually exclusive, and
+both present on the same target is a hard failure neither will act on.
 
 ## No migrations. Ever.
 

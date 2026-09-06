@@ -152,20 +152,21 @@ it('reports drift and fails closed rather than reconciling it', function () {
         ->toContain('refusing to overwrite');
 });
 
-it('implements no Recover operation', function () {
-    foreach ([
-        'infrastructure/scripts/recover-host',
-        '.github/workflows/recover-staging-host.yml',
-        '.github/workflows/recover-production-host.yml',
-        '.github/actions/recover-rateguru-host/action.yml',
-    ] as $path) {
-        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to Recover Host/7.7, not 7.2");
-    }
-
-    // Recovery rebuilds an application from the source SHA a backup carries.
-    // Preparation never builds anything.
+it('keeps preparation free of the Recover operation it enables', function () {
+    // Host recovery now exists, and it REQUIRES a prepared host — but
+    // preparation still knows nothing about it. Nothing in the preparation
+    // surface may drive a recovery, restore data or build an application.
     expect(File::get(base_path('.github/actions/prepare-rateguru-host/action.yml')))
-        ->not->toContain('build-rateguru');
+        ->not->toContain('build-rateguru')
+        ->not->toContain('recover-host');
+
+    expect(File::get(base_path('infrastructure/scripts/prepare-host')))
+        ->not->toContain('recover-host');
+
+    // The dependency runs one way only: recovery verifies preparation, never
+    // the reverse.
+    expect(File::get(base_path('infrastructure/scripts/recover-host')))
+        ->toContain('prepare-host');
 });
 
 // =============================================================================
@@ -242,27 +243,50 @@ it('leaves the backup architecture and its manifest schema untouched', function 
     }
 });
 
-it('lets Restore Target Data add exactly one fail-closed guard to backup, and nothing else', function () {
+it('lets a data operation add exactly one fail-closed guard to backup, and nothing else', function () {
     // The one deliberate change a later phase made to this path, asserted
-    // positively so it cannot quietly grow into backup logic. A target held
-    // after a restore has data belonging to a different commit than
-    // current/release.json names, and a backup taken there would label it with
-    // that commit — so backup refuses, and refuses without touching anything.
+    // positively so it cannot quietly grow into backup logic. A target held by
+    // a restore, or being rebuilt by a host recovery, has data belonging to a
+    // different commit than current/release.json names, and a backup taken
+    // there would label it with that commit — so backup refuses, and refuses
+    // without touching anything.
     $backup = File::get(base_path('infrastructure/scripts/backup'));
 
-    expect($backup)->toContain('assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"');
+    expect($backup)->toContain('assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"');
 
     // Before perform_backup, which is what makes it a refusal rather than a
     // half-created snapshot.
-    expect(mb_strpos($backup, 'assert_no_restore_hold'))
+    expect(mb_strpos($backup, 'assert_no_operation_hold'))
         ->toBeLessThan(mb_strpos($backup, "\n    perform_backup\n"));
 
-    // Read-only: the guard reads a marker and fails. It never writes, removes
-    // or repairs one — clearing the hold belongs to restore-target --resume.
+    // Read-only: each guard reads a marker and fails. None writes, removes or
+    // repairs one — clearing a hold belongs to that operation's own --resume.
+    //
+    // Judged on the guard's OWN body, statement by statement, rather than on a
+    // window of characters after its name: these refusals are long prose, and
+    // a text window turns an operator sentence containing the word "touch"
+    // into a violation while saying nothing about the code.
     $common = File::get(base_path('infrastructure/scripts/common'));
 
-    expect($common)->toContain('assert_no_restore_hold()');
-    expect($common)->not->toMatch('/assert_no_restore_hold\(\)[\s\S]{0,2000}?\b(rm|mv|install|touch|printf[^\n]*>)\s/');
+    foreach (['assert_no_restore_hold', 'assert_no_recovery_hold', 'assert_no_operation_hold'] as $guard) {
+        expect($common)->toContain($guard.'()');
+
+        $body = executableSourceLines(shellFunctionBody($common, $guard));
+
+        foreach (preg_split('/\R/', $body) as $line) {
+            expect(ltrim($line))->not->toMatch(
+                '/^(rm|mv|cp|install|touch|chmod|chown|mkdir|ln|tee|truncate)\b/',
+                "{$guard} must not mutate anything: {$line}",
+            );
+
+            // Discarding output is not writing. Everything else that redirects
+            // is: these functions read a marker and call `fail`, and nothing
+            // they do may leave a byte behind.
+            $redirects = preg_replace('/\d?>\s*(\/dev\/null|&\d)/', '', $line);
+
+            expect($redirects)->not->toContain('>', "{$guard} must not redirect into a file: {$line}");
+        }
+    }
 });
 
 it('keeps release.json exactly as it is', function () {

@@ -66,6 +66,18 @@ inputs:
       into alignment mode, where the target stays held throughout and
       migrations are forbidden.
 
+  recovery-operation:
+    required: false
+    default: ""
+    description: >-
+      Host recovery operation ID this deployment is the controlled recovery
+      deployment for. Empty (the default) is an ordinary deployment and changes
+      nothing about this action's behaviour. Non-empty switches the server-side
+      deploy into recovery mode, where a rebuilt replacement host receives the
+      exact commit its recovered data belongs to, stays held throughout, keeps
+      `previous` absent and forbids migrations. Mutually exclusive with
+      restore-operation.
+
 runs:
   using: composite
 
@@ -79,6 +91,7 @@ runs:
         CHECKSUM_PATH: ${{ inputs.checksum-path }}
         RUN_MIGRATIONS: ${{ inputs.run-migrations }}
         RESTORE_OPERATION: ${{ inputs.restore-operation }}
+        RECOVERY_OPERATION: ${{ inputs.recovery-operation }}
       run: |
         set -Eeuo pipefail
 
@@ -122,27 +135,50 @@ runs:
             ;;
         esac
 
-        # Controlled code alignment. Nothing below runs for an ordinary
+        # Controlled deployments. Nothing below runs for an ordinary
         # deployment, whose contract is byte-for-byte what it was.
-        if [[ -n "${RESTORE_OPERATION}" ]]; then
-          # The same closed format the server enforces, checked here so a
-          # malformed value never reaches an SSH command line.
-          operation_regex='^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$'
 
+        # A target is either a live one whose restored data awaits its code, or
+        # a replacement host being rebuilt — never both. Refused at the
+        # perimeter as well as on the server, so a mistaken workflow never
+        # opens a connection at all.
+        if [[ -n "${RESTORE_OPERATION}" ]] && [[ -n "${RECOVERY_OPERATION}" ]]; then
+          echo "restore-operation and recovery-operation are mutually exclusive: a live restore awaiting code alignment and a host recovery awaiting its first code are different operations, and no deployment serves both" >&2
+          exit 1
+        fi
+
+        # The same closed format the server enforces, checked here so a
+        # malformed value never reaches an SSH command line.
+        operation_regex='^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$'
+
+        if [[ -n "${RESTORE_OPERATION}" ]]; then
           if [[ ! "${RESTORE_OPERATION}" =~ ${operation_regex} ]]; then
             echo "Invalid restore operation ID: ${RESTORE_OPERATION}" >&2
             exit 1
           fi
 
-          # Refused before any SSH connection is made, not left to the server.
           # An alignment installs the exact commit the restored data was taken
           # under; a migration is by definition a change to that data's shape,
           # so the two requests contradict each other and neither is the safe
           # reading of a contradiction. The server refuses this too — this is
-          # the same rule stated at the perimeter, so a mistaken workflow
-          # never opens a connection at all.
+          # the same rule stated at the perimeter.
           if [[ "${RUN_MIGRATIONS}" == "true" ]]; then
             echo "run-migrations must be false when restore-operation is set: a controlled code alignment never migrates the data it is aligning to" >&2
+            exit 1
+          fi
+        fi
+
+        if [[ -n "${RECOVERY_OPERATION}" ]]; then
+          if [[ ! "${RECOVERY_OPERATION}" =~ ${operation_regex} ]]; then
+            echo "Invalid recovery operation ID: ${RECOVERY_OPERATION}" >&2
+            exit 1
+          fi
+
+          # Identical reasoning: a recovery deployment installs the exact
+          # commit the RECOVERED data belongs to, so migrating it would change
+          # the shape of the very data that commit was chosen to match.
+          if [[ "${RUN_MIGRATIONS}" == "true" ]]; then
+            echo "run-migrations must be false when recovery-operation is set: a controlled recovery deployment never migrates the data it is recovering onto" >&2
             exit 1
           fi
         fi
@@ -226,6 +262,7 @@ runs:
         ARTIFACT_PATH: ${{ inputs.artifact-path }}
         RUN_MIGRATIONS: ${{ inputs.run-migrations }}
         RESTORE_OPERATION: ${{ inputs.restore-operation }}
+        RECOVERY_OPERATION: ${{ inputs.recovery-operation }}
       run: |
         set -Eeuo pipefail
 
@@ -259,15 +296,22 @@ runs:
           remote_command+=" --migrate"
         fi
 
-        # The ONLY thing this action tells the server about an alignment: which
-        # operation it is finishing. It never names a commit — the required
-        # commit is read on the server, out of that operation's own persisted
-        # restore state, and the artifact is checked against it there.
+        # The ONLY thing this action tells the server about a controlled
+        # deployment: which operation it is finishing. It never names a commit —
+        # the required commit is read on the server, out of that operation's own
+        # persisted state, and the artifact is checked against it there.
         if [[ -n "${RESTORE_OPERATION}" ]]; then
           echo "Controlled restore alignment for operation ${RESTORE_OPERATION}"
 
           printf -v restore_argument ' --restore-operation %q' "${RESTORE_OPERATION}"
           remote_command+="${restore_argument}"
+        fi
+
+        if [[ -n "${RECOVERY_OPERATION}" ]]; then
+          echo "Controlled recovery deployment for operation ${RECOVERY_OPERATION}"
+
+          printf -v recovery_argument ' --recovery-operation %q' "${RECOVERY_OPERATION}"
+          remote_command+="${recovery_argument}"
         fi
 
         ssh \

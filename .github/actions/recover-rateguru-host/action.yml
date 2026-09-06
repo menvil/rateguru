@@ -1,0 +1,641 @@
+name: Recover RateGuru host
+description: >-
+  Rebuild one lost target onto a prepared replacement machine, by transporting
+  trusted tooling to that machine and running the server-side recover-host
+  primitive — restoring exactly one offsite backup and leaving the host
+  deliberately not serving until the exact commit that backup names has been
+  deployed.
+
+# Transport and invocation only.
+#
+# infrastructure/scripts/recover-host owns every decision this operation makes:
+# what a prepared, EMPTY replacement host is, which backup primitives it
+# delegates to, the locks it takes, the guard it writes, the environment
+# comparison it refuses on, the staged swap, the compensation, what it refuses
+# to touch, and the proof that it touched none of it. None of that is
+# reimplemented, mirrored or second-guessed in YAML. This action packages the
+# trusted tooling, runs one command and cleans up after itself.
+#
+# WHAT IT IS NOT. It never builds and it never deploys: there is deliberately no
+# `ref`, `branch`, `tag`, `source-sha`, `release` or `run-migrations` input, no
+# artifact is built, uploaded or downloaded, and no application source is ever
+# involved. The commit the recovered data belongs to is read on the SERVER, out
+# of the backup's own release.json, and is never supplied here. It also never
+# prepares a host, never repairs one, never restores a live target, never
+# provisions a target, never activates production and never changes DNS.
+#
+# NO BACKUP LOCATION INPUTS, BY CONSTRUCTION. There is no `source`, `remote`,
+# `bucket`, `path` or `command` input. Where a backup lives comes from the
+# target registry plus the fixed RateGuru offsite configuration, on the server;
+# the only thing an operator names is the exact backup timestamp. A recovery
+# models the loss of the old machine, so there is no local option and no
+# "latest".
+#
+# NO SECRETS, BY CONSTRUCTION. This action has no material inputs at all — not
+# a Laravel environment file, not authorized_keys, not an rclone config, not
+# Basic Auth hashes, not a TLS certificate or key. Prepare Host is what puts
+# external material on the replacement machine, from the GitHub Environment
+# that owns it. Recovery COMPARES the prepared environment file against the
+# backup's and refuses on a difference; it never writes one, never rotates a
+# secret and never alters a database password.
+#
+# CREDENTIAL SEPARATION. This uses the privileged BOOTSTRAP credential, the
+# same one host preparation and repair use, and deliberately NOT the deploy
+# credential. The deploy key is restricted to the narrow rateguru-deploy /
+# rateguru-rollback sudo wrappers and cannot recover a host; recovery needs
+# root, so it uses the credential that already has its own lifecycle for
+# exactly that. If the environment has no bootstrap credential this action
+# fails rather than falling back to DEPLOY_SSH_KEY — a fallback would quietly
+# widen what the deploy key is for.
+#
+# TRUSTED TOOLING. The bundle is built from whatever the calling workflow
+# checked out, and every caller checks out `develop`. It is never taken from a
+# historical application commit: the whole premise of a recovery is that the
+# code being rebuilt is OLD, and letting old code define how a host is
+# recovered would hand a historical commit the recovery credential.
+
+inputs:
+  mode:
+    required: true
+    description: >-
+      apply, inspect, resume or verify. `apply` starts a new recovery from
+      `backup-id`; `inspect` and `resume` address an existing operation by
+      `operation-id`; `verify` is the read-only final contract for a recovered
+      target.
+
+  deployment-target:
+    required: true
+    description: >-
+      Deployment target ID from the RateGuru target registry. A structural
+      property of the calling workflow, never operator input.
+
+  environment:
+    required: true
+    description: Environment class this recovery runs in (staging or production)
+
+  recovery-host:
+    required: true
+    description: >-
+      SSH hostname or IP of the REPLACEMENT machine. Deliberately an explicit
+      input rather than the target's registered host: a recovery exists because
+      the registered host is gone, and the caller is what binds the logical
+      target to the physical machine that is replacing it. Nothing here edits
+      the registry or a GitHub Environment variable.
+
+  recovery-port:
+    required: false
+    default: "22"
+    description: SSH server port
+
+  bootstrap-user:
+    required: true
+    description: >-
+      Privileged bootstrap/recovery user. Must be root, or hold passwordless
+      non-interactive sudo; verified before anything is uploaded.
+
+  bootstrap-ssh-key:
+    required: true
+    description: Privileged bootstrap SSH private key, separate from the deployment key
+
+  bootstrap-known-hosts:
+    required: true
+    description: >-
+      Verified known_hosts entry for the replacement host. Strict host key
+      checking is non-negotiable here: there is no TOFU, no relaxed host-key
+      policy and no password fallback anywhere in this action.
+
+  backup-id:
+    required: false
+    default: ""
+    description: >-
+      The exact offsite backup timestamp (YYYYMMDD-HHMMSS) to recover from.
+      Required for mode=apply, refused for every other mode. There is no
+      "latest" and no implicit selection.
+
+  operation-id:
+    required: false
+    default: ""
+    description: >-
+      The recovery operation to inspect or resume. Required for mode=inspect
+      and mode=resume, refused for every other mode.
+
+outputs:
+  status:
+    description: "The status the server reported: awaiting-code, completed or verified"
+    value: ${{ steps.recover.outputs.status }}
+
+  operation:
+    description: "The recovery operation ID the server generated or was given"
+    value: ${{ steps.recover.outputs.operation }}
+
+  backup:
+    description: "The offsite backup this recovery restored"
+    value: ${{ steps.recover.outputs.backup }}
+
+  backup-release:
+    description: "The release identity recorded in that backup"
+    value: ${{ steps.recover.outputs['backup-release'] }}
+
+  required-source-sha:
+    description: >-
+      The exact commit the recovered data belongs to, read by the server from
+      the backup's own release.json. This is what a historical build must
+      produce, and it is never supplied to this action.
+    value: ${{ steps.recover.outputs['required-source-sha'] }}
+
+  data-restored:
+    description: "true once the database and storage have been activated on the replacement host"
+    value: ${{ steps.recover.outputs['data-restored'] }}
+
+  current-release:
+    description: "The release the recovered target serves (empty until the recovery deployment ran)"
+    value: ${{ steps.recover.outputs['current-release'] }}
+
+  source-sha:
+    description: "The source commit of that release"
+    value: ${{ steps.recover.outputs['source-sha'] }}
+
+  health:
+    description: "The host's health after a completed recovery"
+    value: ${{ steps.recover.outputs.health }}
+
+runs:
+  using: composite
+
+  steps:
+    # Fixed caller inputs only. Everything checked here is either a structural
+    # property of the calling workflow or a closed-format operator value, so a
+    # violation fails closed before the privileged credential is used at all.
+    - name: Validate fixed caller inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        RECOVERY_HOST: ${{ inputs.recovery-host }}
+        RECOVERY_PORT: ${{ inputs.recovery-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        BOOTSTRAP_KEY_PRESENT: ${{ inputs.bootstrap-ssh-key != '' }}
+        BOOTSTRAP_KNOWN_HOSTS_PRESENT: ${{ inputs.bootstrap-known-hosts != '' }}
+        BACKUP_ID: ${{ inputs.backup-id }}
+        OPERATION_ID: ${{ inputs.operation-id }}
+      run: |
+        set -Eeuo pipefail
+
+        case "${MODE}" in
+          apply|inspect|resume|verify)
+            ;;
+          *)
+            echo "mode must be apply, inspect, resume or verify (got: ${MODE})" >&2
+            exit 1
+            ;;
+        esac
+
+        # Rejects empty, uppercase, slash, whitespace, shell metacharacters and
+        # a flag-shaped value (a leading "-") in one closed character class.
+        # The same expression the deploy, rollback, preparation, restore and
+        # repair actions validate a target with.
+        target_regex='^[a-z0-9]+(-[a-z0-9]+)*$'
+
+        [[ "${DEPLOYMENT_TARGET}" =~ ${target_regex} ]] || {
+          echo "Invalid deployment target: ${DEPLOYMENT_TARGET}" >&2
+          exit 1
+        }
+
+        case "${ENVIRONMENT}" in
+          staging|production)
+            ;;
+          *)
+            echo "environment must be staging or production (got: ${ENVIRONMENT})" >&2
+            exit 1
+            ;;
+        esac
+
+        # A syntactically numeric port is not enough: 0 and anything above
+        # 65535 would sail through and fail later inside every ssh call with a
+        # far less obvious diagnostic.
+        # 10# forces decimal. Bash reads a leading-zero operand inside (( ))
+        # as octal, so a port like 08 would raise "value too great for base",
+        # return non-zero, and be read by this || chain as "the condition did
+        # not hold" — quietly passing validation.
+        if [[ ! "${RECOVERY_PORT}" =~ ^[0-9]{1,5}$ ]] \
+          || (( 10#${RECOVERY_PORT} < 1 )) \
+          || (( 10#${RECOVERY_PORT} > 65535 ))
+        then
+          echo "Invalid recovery port (expected 1-65535): ${RECOVERY_PORT}" >&2
+          exit 1
+        fi
+
+        for required_var in RECOVERY_HOST BOOTSTRAP_USER; do
+          if [[ -z "${!required_var}" ]]; then
+            echo "${required_var} is not configured for this recovery" >&2
+            exit 1
+          fi
+        done
+
+        if [[ "${BOOTSTRAP_KEY_PRESENT}" != "true" ]] \
+          || [[ "${BOOTSTRAP_KNOWN_HOSTS_PRESENT}" != "true" ]]
+        then
+          echo "The ${ENVIRONMENT} environment has no bootstrap SSH credential." >&2
+          echo "Recovery deliberately refuses to fall back to the deployment key: that key is restricted to the deploy wrappers, cannot rebuild a host, and must not be widened into a recovery credential." >&2
+          exit 1
+        fi
+
+        # The two operand inputs are per-mode, and each is refused outside its
+        # own mode rather than ignored: an operator who passes a backup to
+        # `resume` has misunderstood which operation they are running, and
+        # silently dropping the value would hide that.
+        case "${MODE}" in
+          apply)
+            if [[ ! "${BACKUP_ID}" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+              echo "mode=apply requires backup-id as an exact YYYYMMDD-HHMMSS timestamp (got: ${BACKUP_ID:-<empty>}). There is no 'latest' and no implicit selection." >&2
+              exit 1
+            fi
+
+            if [[ -n "${OPERATION_ID}" ]]; then
+              echo "operation-id is not valid with mode=apply: a new recovery generates its own operation ID on the server" >&2
+              exit 1
+            fi
+            ;;
+          inspect|resume)
+            if [[ ! "${OPERATION_ID}" =~ ^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$ ]]; then
+              echo "mode=${MODE} requires operation-id in the server's own operation format (got: ${OPERATION_ID:-<empty>})" >&2
+              exit 1
+            fi
+
+            if [[ -n "${BACKUP_ID}" ]]; then
+              echo "backup-id is not valid with mode=${MODE}: the backup an operation used is recorded in its own state on the server" >&2
+              exit 1
+            fi
+            ;;
+          verify)
+            if [[ -n "${BACKUP_ID}" ]] || [[ -n "${OPERATION_ID}" ]]; then
+              echo "mode=verify takes neither backup-id nor operation-id: it reports on the target as it stands now" >&2
+              exit 1
+            fi
+            ;;
+        esac
+
+    # The server-side lifecycle gate stays authoritative, and it is what
+    # actually protects the host. This is the same question asked one step
+    # earlier, on the runner, so that a run against a lifecycle=planned target
+    # is refused before any tooling is uploaded and before the privileged
+    # credential is used against the host at all.
+    #
+    # It asks the repository's own `targets` CLI, against the committed
+    # registry in the trusted checkout — no lifecycle rule is reimplemented here.
+    - name: Validate the target lifecycle before anything is uploaded
+      shell: bash
+      env:
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+      run: |
+        set -Eeuo pipefail
+
+        registry="${GITHUB_WORKSPACE}/infrastructure/config/deployment-targets.json"
+        targets_cli="${GITHUB_WORKSPACE}/infrastructure/scripts/targets"
+
+        test -x "${targets_cli}"
+        test -f "${registry}"
+
+        if ! target_json="$("${targets_cli}" show --target "${DEPLOYMENT_TARGET}" --file "${registry}" 2>&1)"; then
+          echo "${target_json}" >&2
+          echo "Unknown or unusable deployment target: ${DEPLOYMENT_TARGET}" >&2
+          exit 1
+        fi
+
+        lifecycle="$(printf '%s' "${target_json}" | jq -r '.lifecycle // empty')"
+
+        if [[ "${lifecycle}" != "active" ]]; then
+          echo "Target ${DEPLOYMENT_TARGET} has lifecycle=${lifecycle:-unknown}, not active." >&2
+          echo "Recovery is refused before any tooling is uploaded. A recovery rebuilds a target that is already live somewhere; activating a target is a deliberate registry change in its own right, never a side effect of recovering a host." >&2
+          exit 1
+        fi
+
+        echo "Target ${DEPLOYMENT_TARGET}: lifecycle=active — recovery may proceed"
+
+    - name: Configure bootstrap SSH
+      shell: bash
+      env:
+        BOOTSTRAP_SSH_KEY: ${{ inputs.bootstrap-ssh-key }}
+        BOOTSTRAP_KNOWN_HOSTS: ${{ inputs.bootstrap-known-hosts }}
+      run: |
+        set -Eeuo pipefail
+
+        key_path="${RUNNER_TEMP}/rateguru_recover_key"
+        known_hosts_path="${RUNNER_TEMP}/rateguru_recover_known_hosts"
+
+        install -m 0600 /dev/null "${key_path}"
+        install -m 0600 /dev/null "${known_hosts_path}"
+
+        printf '%s\n' "${BOOTSTRAP_SSH_KEY}" > "${key_path}"
+        printf '%s\n' "${BOOTSTRAP_KNOWN_HOSTS}" > "${known_hosts_path}"
+
+        ssh-keygen -y -f "${key_path}" >/dev/null
+
+        {
+          echo "RATEGURU_BOOTSTRAP_SSH_KEY_PATH=${key_path}"
+          echo "RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH=${known_hosts_path}"
+        } >> "${GITHUB_ENV}"
+
+    # Establishes the privileged path once, so every later step uses the same
+    # prefix and no step has to guess. Root gets an empty prefix; a sudoer gets
+    # `sudo -n`, which fails immediately rather than waiting on a password
+    # prompt that would hang a non-interactive run.
+    - name: Verify privileged access on the replacement host
+      id: access
+      shell: bash
+      env:
+        RECOVERY_HOST: ${{ inputs.recovery-host }}
+        RECOVERY_PORT: ${{ inputs.recovery-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+      run: |
+        set -Eeuo pipefail
+
+        ssh_bootstrap() {
+          ssh \
+            -p "${RECOVERY_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${RECOVERY_HOST}" \
+            "$@"
+        }
+
+        remote_uid="$(ssh_bootstrap 'id -u')"
+
+        if [[ "${remote_uid}" == "0" ]]; then
+          privileged_prefix=""
+          echo "Bootstrap user ${BOOTSTRAP_USER} is root."
+        elif ssh_bootstrap 'sudo -n true' >/dev/null 2>&1; then
+          privileged_prefix="sudo -n"
+          echo "Bootstrap user ${BOOTSTRAP_USER} holds passwordless non-interactive sudo."
+        else
+          echo "Bootstrap user ${BOOTSTRAP_USER} is neither root nor a passwordless sudoer." >&2
+          echo "Recovery requires root; nothing was uploaded and nothing was changed." >&2
+          exit 1
+        fi
+
+        echo "RATEGURU_PRIVILEGED_PREFIX=${privileged_prefix}" >> "${GITHUB_ENV}"
+
+    # Only infrastructure/ — recover-host, prepare-host (whose verification it
+    # runs) and every installer they delegate to resolve beneath that one
+    # directory, and nothing else in this repository has any business on the
+    # host. The application is emphatically not part of the bundle: the
+    # application this operation restores data for is rebuilt from its own
+    # historical commit by a separate build, and never runs here.
+    - name: Package trusted recovery bundle
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+
+        bundle_path="${RUNNER_TEMP}/rateguru-recover-bundle.tar.gz"
+
+        test -d "${GITHUB_WORKSPACE}/infrastructure/scripts"
+        test -x "${GITHUB_WORKSPACE}/infrastructure/scripts/recover-host"
+        test -x "${GITHUB_WORKSPACE}/infrastructure/scripts/prepare-host"
+
+        tar \
+          --create \
+          --gzip \
+          --file "${bundle_path}" \
+          --directory "${GITHUB_WORKSPACE}" \
+          infrastructure
+
+        chmod 0600 "${bundle_path}"
+
+        echo "RATEGURU_BUNDLE_PATH=${bundle_path}" >> "${GITHUB_ENV}"
+        echo "Bundle contents: $(tar -tzf "${bundle_path}" | wc -l) files from infrastructure/"
+
+    # The remote layout, and the one place a path is chosen:
+    #
+    #   ~/.rateguru-recover-<run>    0700, owned by the bootstrap user — scp can
+    #                               only ever write as that user, so the bundle
+    #                               lands here first;
+    #   /root/rateguru-recover-<run> 0700 root:root — where it is moved before
+    #                               anything runs from it.
+    #
+    # The run ID and attempt make the name unique without any randomness, so a
+    # retry never collides with its own earlier attempt.
+    - name: Upload the trusted recovery bundle
+      id: upload
+      shell: bash
+      env:
+        RECOVERY_HOST: ${{ inputs.recovery-host }}
+        RECOVERY_PORT: ${{ inputs.recovery-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -Eeuo pipefail
+
+        run_tag="${RUN_ID}-${RUN_ATTEMPT}"
+        staging_dir=".rateguru-recover-${run_tag}"
+        remote_root="/root/rateguru-recover-${run_tag}"
+
+        {
+          echo "RATEGURU_REMOTE_STAGING_DIR=${staging_dir}"
+          echo "RATEGURU_REMOTE_ROOT=${remote_root}"
+        } >> "${GITHUB_ENV}"
+
+        ssh_bootstrap() {
+          ssh \
+            -p "${RECOVERY_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${RECOVERY_HOST}" \
+            "$@"
+        }
+
+        printf -v prepare_staging \
+          'umask 077 && rm -rf %q && mkdir -p %q' \
+          "${staging_dir}" "${staging_dir}"
+
+        ssh_bootstrap "${prepare_staging}"
+
+        scp \
+          -P "${RECOVERY_PORT}" \
+          -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+          "${RATEGURU_BUNDLE_PATH}" \
+          "${BOOTSTRAP_USER}@${RECOVERY_HOST}:${staging_dir}/bundle.tar.gz"
+
+        printf -v install_remote \
+          'set -Eeuo pipefail; umask 077; %s install -d -m 0700 -o root -g root %q && %s tar -xzpf %q/bundle.tar.gz -C %q && %s chown -R root:root %q && rm -rf %q' \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${remote_root}" \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${staging_dir}" "${remote_root}" \
+          "${RATEGURU_PRIVILEGED_PREFIX}" "${remote_root}" \
+          "${staging_dir}"
+
+        ssh_bootstrap "bash -c ${install_remote@Q}"
+
+        echo "Trusted tooling installed under ${remote_root} (root-only)."
+
+    - name: Run the server-side recovery
+      id: recover
+      shell: bash
+      env:
+        RECOVERY_HOST: ${{ inputs.recovery-host }}
+        RECOVERY_PORT: ${{ inputs.recovery-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+        DEPLOYMENT_TARGET: ${{ inputs.deployment-target }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        MODE: ${{ inputs.mode }}
+        BACKUP_ID: ${{ inputs.backup-id }}
+        OPERATION_ID: ${{ inputs.operation-id }}
+      run: |
+        set -Eeuo pipefail
+
+        # A fixed argv built as a Bash array and quoted element-wise, never an
+        # interpolated shell string. recover-host itself accepts only a closed
+        # flag set: no command, no path, no remote, no bucket, no source SHA,
+        # no release and no free-text argument of any kind.
+        remote_command=(
+          ${RATEGURU_PRIVILEGED_PREFIX}
+          "${RATEGURU_REMOTE_ROOT}/infrastructure/scripts/recover-host"
+          "--${MODE}"
+          --target "${DEPLOYMENT_TARGET}"
+        )
+
+        case "${MODE}" in
+          apply)
+            remote_command+=(--backup "${BACKUP_ID}")
+            ;;
+          inspect|resume)
+            remote_command+=(--operation "${OPERATION_ID}")
+            ;;
+        esac
+
+        # The status each mode must report. A run that succeeds with the wrong
+        # status is not a success this action will pass on: it means the server
+        # answered about a different state than the one the caller asked for.
+        case "${MODE}" in
+          apply)   expected_status=awaiting-code ;;
+          inspect) expected_status=awaiting-code ;;
+          resume)  expected_status=completed ;;
+          verify)  expected_status=verified ;;
+        esac
+
+        recovery_output="$(
+          ssh \
+            -p "${RECOVERY_PORT}" \
+            -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+            "${BOOTSTRAP_USER}@${RECOVERY_HOST}" \
+            "${remote_command[@]@Q}"
+        )"
+
+        printf '%s\n' "${recovery_output}"
+
+        # Exactly one machine-readable line, counted rather than taken with
+        # `grep -m1`: the primitive's contract is EXACTLY one result per
+        # terminal success, and accepting two without a word is the shape a bug
+        # in that contract would take.
+        count="$(grep -c '^RATEGURU_RECOVER_RESULT=' <<<"${recovery_output}" || true)"
+
+        if [[ "${count}" != "1" ]]; then
+          echo "Expected exactly one RATEGURU_RECOVER_RESULT line, got ${count}." >&2
+          exit 1
+        fi
+
+        result_json="$(grep '^RATEGURU_RECOVER_RESULT=' <<<"${recovery_output}")"
+        result_json="${result_json#RATEGURU_RECOVER_RESULT=}"
+
+        jq -e --arg status "${expected_status}" \
+          'type == "object" and .status == $status' <<<"${result_json}" >/dev/null || {
+          echo "The machine-readable recovery result is not a ${expected_status} result: ${result_json}" >&2
+          exit 1
+        }
+
+        jq -e --arg target "${DEPLOYMENT_TARGET}" '.target == $target' <<<"${result_json}" >/dev/null || {
+          echo "The machine-readable recovery result describes a different target: ${result_json}" >&2
+          exit 1
+        }
+
+        {
+          echo "status=$(jq -r '.status' <<<"${result_json}")"
+          echo "operation=$(jq -r '.operation' <<<"${result_json}")"
+          echo "backup=$(jq -r '.backup' <<<"${result_json}")"
+          echo "backup-release=$(jq -r '.backup_release' <<<"${result_json}")"
+          echo "required-source-sha=$(jq -r '.required_source_sha' <<<"${result_json}")"
+          echo "data-restored=$(jq -r '.data_restored' <<<"${result_json}")"
+          echo "current-release=$(jq -r '.current_release' <<<"${result_json}")"
+          echo "source-sha=$(jq -r '.source_sha' <<<"${result_json}")"
+          echo "health=$(jq -r '.health' <<<"${result_json}")"
+        } >> "${GITHUB_OUTPUT}"
+
+        {
+          echo "## Host recovery — ${MODE}"
+          echo
+          echo "- Target: \`${DEPLOYMENT_TARGET}\` (\`${ENVIRONMENT}\`)"
+          echo "- Replacement host: \`${RECOVERY_HOST}\`"
+          echo "- Status: \`$(jq -r '.status' <<<"${result_json}")\`"
+          echo "- Operation: \`$(jq -r '.operation' <<<"${result_json}")\`"
+          echo "- Backup: \`$(jq -r '.backup' <<<"${result_json}")\` (offsite)"
+          echo "- Backup release: \`$(jq -r '.backup_release' <<<"${result_json}")\`"
+          echo "- Required source SHA: \`$(jq -r '.required_source_sha' <<<"${result_json}")\`"
+          echo "- Data restored: \`$(jq -r '.data_restored' <<<"${result_json}")\`"
+          echo "- Current release: \`$(jq -r '.current_release' <<<"${result_json}")\` (source \`$(jq -r '.source_sha' <<<"${result_json}")\`)"
+          echo "- Health: \`$(jq -r '.health' <<<"${result_json}")\` · Queue: \`$(jq -r '.queue' <<<"${result_json}")\` · Scheduler: \`$(jq -r '.scheduler' <<<"${result_json}")\`"
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+    # Runs on failure too. Uploaded tooling must never outlive the run that
+    # uploaded it, whatever happened in between.
+    - name: Remove the remote recovery bundle
+      if: ${{ always() }}
+      shell: bash
+      env:
+        RECOVERY_HOST: ${{ inputs.recovery-host }}
+        RECOVERY_PORT: ${{ inputs.recovery-port }}
+        BOOTSTRAP_USER: ${{ inputs.bootstrap-user }}
+      run: |
+        set -Eeuo pipefail
+
+        if [[ -z "${RATEGURU_REMOTE_ROOT:-}" ]]; then
+          echo "Nothing was uploaded; no remote cleanup required."
+          exit 0
+        fi
+
+        printf -v cleanup_command \
+          '%s rm -rf %q && rm -rf %q' \
+          "${RATEGURU_PRIVILEGED_PREFIX:-}" "${RATEGURU_REMOTE_ROOT}" "${RATEGURU_REMOTE_STAGING_DIR:-/nonexistent}"
+
+        # Cleanup failure is reported loudly but never masks the real outcome
+        # of the run; the operator needs to see which failure came first.
+        if ssh \
+          -p "${RECOVERY_PORT}" \
+          -i "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH}" \
+          -o BatchMode=yes \
+          -o IdentitiesOnly=yes \
+          -o ConnectTimeout=15 \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH}" \
+          "${BOOTSTRAP_USER}@${RECOVERY_HOST}" \
+          "bash -c ${cleanup_command@Q}"
+        then
+          echo "Removed ${RATEGURU_REMOTE_ROOT} and the upload staging directory."
+        else
+          echo "WARNING: could not remove ${RATEGURU_REMOTE_ROOT} from the host. Remove it manually." >&2
+        fi
+
+    - name: Remove temporary local files
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        rm -f \
+          "${RATEGURU_BUNDLE_PATH:-}" \
+          "${RATEGURU_BOOTSTRAP_SSH_KEY_PATH:-}" \
+          "${RATEGURU_BOOTSTRAP_KNOWN_HOSTS_PATH:-}"

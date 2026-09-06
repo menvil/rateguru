@@ -741,6 +741,92 @@ assert_no_restore_hold() {
     fail "${target_id} is held after restore operation ${held_operation} (status ${held_status}): its live data may be from a backup taken under ${held_sha}, which is not what current serves, so ${operation} is refused — a backup would record the wrong source_sha for this data, and a deployment, rollback or cleanup would move the code further away from it or delete the release it needs. Controlled code alignment is required, and it is the ONLY thing that may end this hold. Do NOT use the normal deployment path: run the Restore workflow for this target with mode=continue-held and operation=${held_operation}, or, by hand, deploy the required source SHA with 'deploy --target ${target_id} --restore-operation ${held_operation}' and finish with 'restore-target --resume'. The guard is ${marker}"
 }
 
+# --- recovery guard ----------------------------------------------------------
+#
+# The restore guard above says "this target's DATA may not match its CODE".
+# The recovery guard says something different and needs its own marker rather
+# than a second meaning bolted onto the first: "this target is a replacement
+# host part-way through being rebuilt, and it has no code at all yet".
+#
+# The two are separate state machines with separate workspaces, separate
+# histories and separate endings — a restore is finished by
+# `restore-target --resume`, a recovery by `recover-host --resume` — and
+# collapsing them into one marker would make every reader of it guess which
+# machine wrote it.
+#
+# What they share is the interlock: while EITHER exists, an ordinary
+# operation on that target is refused. That is why the refusal below lives
+# here, beside the restore one, and why every operational script calls the
+# combined gate rather than picking a guard to check.
+
+# recovery_guard_file TARGET_ID RUN_ROOT
+recovery_guard_file() {
+    local target_id="${1-}" run_root="${2-}"
+
+    [[ -n "${target_id}" ]] || fail "recovery_guard_file: target ID is required"
+    [[ -n "${run_root}" ]] || fail "recovery_guard_file: run root is required"
+
+    printf '%s/recoveries/%s/recovery-guard\n' "${run_root%/}" "${target_id}"
+}
+
+# assert_no_recovery_hold TARGET_ID RUN_ROOT OPERATION_DESCRIPTION — fail closed
+# while a host recovery owns the target.
+#
+# Reads the marker rather than trusting its presence to be self-explanatory,
+# for the same reason assert_no_restore_hold does: the operator needs the
+# operation ID and the commit the recovery is waiting for, and both are in the
+# file.
+assert_no_recovery_hold() {
+    local target_id="${1-}" run_root="${2-}" operation="${3-an operation}"
+    local marker held_operation held_sha held_status held_backup
+
+    marker="$(recovery_guard_file "${target_id}" "${run_root}")"
+
+    [[ -e "${marker}" ]] || return 0
+
+    held_operation="$(jq -r '.operation // "unknown"' "${marker}" 2>/dev/null || printf 'unknown')"
+    held_sha="$(jq -r '.required_source_sha // "unknown"' "${marker}" 2>/dev/null || printf 'unknown')"
+    held_status="$(jq -r '.status // "unknown"' "${marker}" 2>/dev/null || printf 'unknown')"
+    held_backup="$(jq -r '.backup // "unknown"' "${marker}" 2>/dev/null || printf 'unknown')"
+
+    fail "${target_id} is being recovered onto a replacement host by recovery operation ${held_operation} (status ${held_status}): its data came from backup ${held_backup} and belongs to ${held_sha}, which is not deployed here yet, so ${operation} is refused — a backup would record the wrong source_sha for this data, and a deployment, rollback, cleanup, restore or repair would act on a host that is not finished being rebuilt. Only 'recover-host --inspect', the controlled recovery deployment for this exact operation, and 'recover-host --resume' may touch it. The guard is ${marker}"
+}
+
+# assert_no_conflicting_operation_holds TARGET_ID RUN_ROOT — a restore guard
+# and a recovery guard on the same target at the same time.
+#
+# The two operations are mutually exclusive by construction: a live restore
+# demands a deployed target, a host recovery demands an empty one, and each
+# refuses to start while the other's guard exists. Both present therefore means
+# something outside these tools wrote one of them, or a marker survived from a
+# state nobody reconciled — and no automatic reading of that is safe. It is a
+# hard failure with no continuation path, deliberately reported before either
+# individual refusal so the operator sees the real problem rather than
+# whichever guard happened to be checked first.
+assert_no_conflicting_operation_holds() {
+    local target_id="${1-}" run_root="${2-}"
+    local restore_marker recovery_marker
+
+    restore_marker="$(restore_guard_file "${target_id}" "${run_root}")"
+    recovery_marker="$(recovery_guard_file "${target_id}" "${run_root}")"
+
+    [[ -e "${restore_marker}" ]] && [[ -e "${recovery_marker}" ]] || return 0
+
+    fail "${target_id} carries BOTH a restore guard (${restore_marker}) and a recovery guard (${recovery_marker}). A live restore requires a deployed target and a host recovery requires an empty one, so the two can never legitimately hold the same target at once — nothing may proceed automatically from here. Read both markers and their operations' own state documents, decide which one describes reality, and resolve it by hand"
+}
+
+# assert_no_operation_hold TARGET_ID RUN_ROOT OPERATION_DESCRIPTION — the one
+# gate every ordinary operation calls.
+#
+# Ordinary operations do not care WHICH data operation owns the target, only
+# that one does. Giving them a single call is what stops a future guard from
+# being added to five of the six scripts that need it.
+assert_no_operation_hold() {
+    assert_no_conflicting_operation_holds "${1-}" "${2-}"
+    assert_no_restore_hold "${1-}" "${2-}" "${3-an operation}"
+    assert_no_recovery_hold "${1-}" "${2-}" "${3-an operation}"
+}
+
 # --- restore alignment authorization -----------------------------------------
 #
 # The hold above has exactly one legitimate ending: a controlled deployment of
@@ -859,6 +945,11 @@ assert_restore_alignment_operation() {
     validate_target_id "${target_id}"
     validate_operation_id "${operation_id}"
 
+    # A restore hold and a recovery hold cannot both be real. Checked here
+    # rather than only in the ordinary-operation gate, because a controlled
+    # alignment is the one deployment that walks PAST that gate.
+    assert_no_conflicting_operation_holds "${target_id}" "${run_root}"
+
     local marker
     marker="$(restore_guard_file "${target_id}" "${run_root}")"
 
@@ -965,6 +1056,179 @@ assert_restore_alignment_operation() {
     RESTORE_ALIGNMENT_BACKUP="${state_backup}"
 
     log "restore operation ${operation_id} authorizes a controlled alignment of ${target_id} to ${RESTORE_ALIGNMENT_REQUIRED_SHA} (backup ${RESTORE_ALIGNMENT_BACKUP})"
+}
+
+# --- recovery alignment authorization ----------------------------------------
+#
+# The recovery counterpart of the block above, and deliberately its own
+# implementation rather than a parameter on it: the two holds prove different
+# things. A restore alignment deploys into a target that is HELD — serving
+# nothing, queue stopped, scheduler aside, and still carrying the `current` it
+# had before. A recovery alignment deploys into a target that has NO code at
+# all: its data has been restored onto a replacement host and `current` is
+# absent, which is why there is no runtime hold to re-prove here and no
+# `restore-target --inspect` equivalent to delegate to.
+#
+# What is identical is the rule the whole design rests on: the CALLER never
+# says which commit is required. GitHub hands the server an operation ID and
+# nothing else; the commit comes out of the server's own persisted recovery
+# state, and this is where it is read.
+#
+# Two independent documents have to agree before a single byte moves:
+#
+#   the guard   ${RUN_ROOT}/recoveries/<target>/recovery-guard
+#               root-only, written before the first activation, carries the
+#               operation, the target, the backup, the required commit and the
+#               recovery status
+#   the state   ${RUN_ROOT}/recoveries/<target>/<operation>/state.json
+#               the operation's own record: same target, same backup, status
+#               awaiting-code, phase awaiting-code, and the same commit
+
+# recovery_operation_state_file TARGET_ID RUN_ROOT OPERATION_ID — the same path
+# recover-host composes, expressed once more here for `deploy`, which must read
+# it without sourcing the restore library. Both components are validated first,
+# so no operator-supplied string ever reaches the path.
+recovery_operation_state_file() {
+    local target_id="${1-}" run_root="${2-}" operation_id="${3-}"
+
+    [[ -n "${run_root}" ]] || fail "recovery_operation_state_file: run root is required"
+
+    validate_target_id "${target_id}"
+    validate_operation_id "${operation_id}"
+
+    printf '%s/recoveries/%s/%s/state.json\n' "${run_root%/}" "${target_id}" "${operation_id}"
+}
+
+# Set by assert_recovery_alignment_operation, and only ever from the server's
+# own persisted state — never from an argument.
+RECOVERY_ALIGNMENT_REQUIRED_SHA=""
+RECOVERY_ALIGNMENT_BACKUP=""
+
+assert_recovery_alignment_operation() {
+    local target_id="${1-}" run_root="${2-}" operation_id="${3-}"
+
+    RECOVERY_ALIGNMENT_REQUIRED_SHA=""
+    RECOVERY_ALIGNMENT_BACKUP=""
+
+    [[ -n "${run_root}" ]] || fail "assert_recovery_alignment_operation: run root is required"
+
+    validate_target_id "${target_id}"
+    validate_operation_id "${operation_id}"
+
+    assert_no_conflicting_operation_holds "${target_id}" "${run_root}"
+
+    local marker
+    marker="$(recovery_guard_file "${target_id}" "${run_root}")"
+
+    # 1. There is a recovery at all. A controlled recovery deployment is
+    #    meaningless without one: nothing is recovering, so nothing needs the
+    #    special runtime policy, and an ordinary deployment is the right tool.
+    [[ -e "${marker}" ]] \
+        || fail "${target_id} is not being recovered: no recovery guard at ${marker}. --recovery-operation is only for installing the exact code a recovered host is waiting for; an ordinary deployment needs no recovery operation"
+
+    # 2. It is a real, regular file this credential could not have swapped for
+    #    a symlink pointing at something more convenient.
+    [[ ! -L "${marker}" ]] \
+        || fail "the recovery guard ${marker} is a symlink — refusing to authorize a controlled recovery deployment against it"
+    [[ -f "${marker}" ]] \
+        || fail "the recovery guard ${marker} is not a regular file — refusing to authorize a controlled recovery deployment against it"
+
+    # Ownership and mode are demanded of the INSTALLED run root only, exactly
+    # as the restore guard above treats its own.
+    if [[ "${run_root%/}" == "/home/www/rateguru/run" ]]; then
+        [[ "$(stat -c '%u' "${marker}")" == "0" ]] \
+            || fail "the recovery guard ${marker} is not owned by root — refusing to authorize a controlled recovery deployment against it"
+
+        local marker_mode
+        marker_mode="$(stat -c '%a' "${marker}")"
+
+        (( (8#${marker_mode} & 8#077) == 0 )) \
+            || fail "the recovery guard ${marker} is readable or writable beyond root — refusing to authorize a controlled recovery deployment against it"
+    fi
+
+    jq -e 'type == "object"' "${marker}" >/dev/null 2>&1 \
+        || fail "the recovery guard ${marker} is not a JSON object — refusing to authorize a controlled recovery deployment against it"
+
+    local guard_target guard_operation guard_status guard_sha guard_backup
+    guard_target="$(restore_alignment_read_json "${marker}" '.target')"
+    guard_operation="$(restore_alignment_read_json "${marker}" '.operation')"
+    guard_status="$(restore_alignment_read_json "${marker}" '.status')"
+    guard_sha="$(restore_alignment_read_json "${marker}" '.required_source_sha')"
+    guard_backup="$(restore_alignment_read_json "${marker}" '.backup')"
+
+    # 3-4. The recovery is this target's, and it is the operation the caller
+    #      named.
+    [[ "${guard_target}" == "${target_id}" ]] \
+        || fail "the recovery guard at ${marker} belongs to target ${guard_target:-<unset>}, not ${target_id}"
+
+    [[ "${guard_operation}" == "${operation_id}" ]] \
+        || fail "${target_id} is being recovered by operation ${guard_operation:-<unset>}, not ${operation_id} — a controlled recovery deployment may only serve the operation that is actually recovering the host"
+
+    # 5. Only `awaiting-code` is a code-alignment state. `in-progress` means a
+    #    recovery is still running or died mid-flight, and `failed-held` means
+    #    one failed with data that may already have been activated: neither is
+    #    finished by deploying a commit, and both need manual recovery.
+    [[ "${guard_status}" == "awaiting-code" ]] \
+        || fail "recovery operation ${operation_id} has status '${guard_status:-<unset>}', not 'awaiting-code' — only a completed data recovery waiting for its code may be deployed into; an in-progress or failed-held recovery needs manual recovery, never a deployment"
+
+    [[ "${guard_sha}" =~ ${RESTORE_ALIGNMENT_SOURCE_SHA_REGEX} ]] \
+        || fail "the recovery guard at ${marker} carries no full 40-character commit (${guard_sha:-<unset>}) — a controlled recovery deployment installs an exact commit and will not guess one"
+
+    [[ -n "${guard_backup}" ]] \
+        || fail "the recovery guard at ${marker} names no backup — refusing to deploy into a recovery that cannot say which backup its data came from"
+
+    # 6-7. The operation's own record, read from the workspace the recovery
+    #      created. A guard without one is not a state a deployment may act on.
+    local state_file
+    state_file="$(recovery_operation_state_file "${target_id}" "${run_root}" "${operation_id}")"
+
+    [[ ! -L "${state_file}" ]] \
+        || fail "recovery operation state ${state_file} is a symlink — refusing to authorize a controlled recovery deployment against it"
+    [[ -f "${state_file}" ]] \
+        || fail "recovery operation ${operation_id} has no state file at ${state_file} — refusing to authorize a controlled recovery deployment without the operation's own record"
+
+    jq -e 'type == "object"' "${state_file}" >/dev/null 2>&1 \
+        || fail "recovery operation state ${state_file} is not a JSON object — refusing to authorize a controlled recovery deployment against it"
+
+    local state_target state_status state_phase state_kind state_sha state_backup
+    state_target="$(restore_alignment_read_json "${state_file}" '.target')"
+    state_status="$(restore_alignment_read_json "${state_file}" '.status')"
+    state_phase="$(restore_alignment_read_json "${state_file}" '.phase')"
+    state_kind="$(restore_alignment_read_json "${state_file}" '.operation_kind')"
+    state_sha="$(restore_alignment_read_json "${state_file}" '.backup_source_sha')"
+    state_backup="$(restore_alignment_read_json "${state_file}" '.backup')"
+
+    [[ "${state_target}" == "${target_id}" ]] \
+        || fail "recovery operation ${operation_id} belongs to target ${state_target:-<unset>}, not ${target_id}"
+
+    # 8. It really is a host recovery, and not a restore operation whose state
+    #    happened to be reachable under this path.
+    [[ "${state_kind}" == "host-recovery" ]] \
+        || fail "recovery operation ${operation_id} records operation_kind '${state_kind:-<unset>}', not 'host-recovery'"
+
+    # 9-10. The data recovery completed and is waiting for code — not running,
+    #       not failed, not already deployed into.
+    [[ "${state_status}" == "awaiting-code" ]] \
+        || fail "recovery operation ${operation_id} has status '${state_status:-<unset>}' — a controlled recovery deployment only applies to an operation whose data recovery completed and whose host is waiting for its code"
+
+    [[ "${state_phase}" == "awaiting-code" ]] \
+        || fail "recovery operation ${operation_id} is in phase '${state_phase:-<unset>}', expected awaiting-code"
+
+    # 11-13. The two documents name the same commit and the same backup, and
+    #        the commit is an exact one.
+    [[ "${state_sha}" =~ ${RESTORE_ALIGNMENT_SOURCE_SHA_REGEX} ]] \
+        || fail "recovery operation ${operation_id} records no full 40-character backup source_sha (${state_sha:-<unset>}) — a controlled recovery deployment installs an exact commit and will not guess one"
+
+    [[ "${state_sha}" == "${guard_sha}" ]] \
+        || fail "recovery operation ${operation_id} records backup source ${state_sha}, but its guard requires ${guard_sha} — refusing to deploy into a host whose own recovery documents disagree"
+
+    [[ "${state_backup}" == "${guard_backup}" ]] \
+        || fail "recovery operation ${operation_id} records backup ${state_backup:-<unset>}, but its guard names ${guard_backup} — refusing to deploy into a host whose own recovery documents disagree"
+
+    RECOVERY_ALIGNMENT_REQUIRED_SHA="${guard_sha}"
+    RECOVERY_ALIGNMENT_BACKUP="${guard_backup}"
+
+    log "recovery operation ${operation_id} authorizes a controlled recovery deployment of ${target_id} to ${RECOVERY_ALIGNMENT_REQUIRED_SHA} (backup ${RECOVERY_ALIGNMENT_BACKUP})"
 }
 
 # --- deployment target registry (end) ---

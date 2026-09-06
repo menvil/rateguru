@@ -491,7 +491,59 @@ it('refuses to run at all without a state document created by restore-target', f
         $result = restoreDatabaseRun($scratch, $operation, 'activate');
 
         expect($result['exit'])->not->toBe(0);
-        expect($result['output'])->toContain('this primitive is driven by restore-target, never invoked on its own');
+        expect($result['output'])->toContain('this primitive is driven by restore-target or recover-host, never invoked on its own');
+    } finally {
+        removeScratchDir($scratch);
+    }
+});
+
+it('reads a state document with no operation kind as the live target restore it can only be', function () {
+    $scratch = restoreScratchDir();
+
+    try {
+        // The default fixture writes exactly what a restore wrote before
+        // operation_kind existed: no such field at all.
+        $operation = restoreDatabaseFixture($scratch);
+
+        expect(restoreOperationState($scratch.'/run/restores/parity-target/'.$operation))
+            ->not->toHaveKey('operation_kind');
+
+        // It stages from `backup-verified` — the live-restore gate — and
+        // activates only from `emergency-backup-verified`, which is the gate a
+        // host recovery deliberately never writes.
+        expect(restoreDatabaseRun($scratch, $operation, 'stage')['exit'])->toBe(0);
+
+        $workspace = $scratch.'/run/restores/parity-target/'.$operation;
+
+        setRestoreOperationPhase($workspace, 'recovery-activation-authorized');
+        $wrongGate = restoreDatabaseRun($scratch, $operation, 'activate');
+
+        expect($wrongGate['exit'])->not->toBe(0);
+        expect($wrongGate['output'])
+            ->toContain("is in phase 'recovery-activation-authorized', expected one of: emergency-backup-verified");
+
+        setRestoreOperationPhase($workspace, 'emergency-backup-verified');
+        expect(restoreDatabaseRun($scratch, $operation, 'activate')['exit'])->toBe(0);
+    } finally {
+        removeScratchDir($scratch);
+    }
+});
+
+it('refuses a state document whose operation kind it cannot classify', function () {
+    $scratch = restoreScratchDir();
+
+    try {
+        $operation = restoreDatabaseFixture($scratch, ['state' => ['operation_kind' => 'something-else']]);
+
+        $result = restoreDatabaseRun($scratch, $operation, 'stage');
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])->toContain('operation state records an unknown operation kind: something-else');
+
+        // Fails closed rather than falling back to the kind with the weaker
+        // activation gate.
+        expect(fakePostgresDatabases($scratch))->toBe(['parity_db']);
+        expect(File::get($scratch.'/createdb.log'))->toBe('');
     } finally {
         removeScratchDir($scratch);
     }

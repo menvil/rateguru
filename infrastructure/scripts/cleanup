@@ -456,7 +456,7 @@ perform_apply() {
     # side-effect-free --dry-run is deliberately still allowed: refusing to
     # ANSWER a read-only question protects nothing, and an operator working a
     # hold has every reason to ask what cleanup would do afterwards.
-    assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a cleanup"
+    assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a cleanup"
 
     ensure_pinned_file_exists
 

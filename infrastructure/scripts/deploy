@@ -111,13 +111,33 @@ Usage:
     --checksum /path/to/release.tar.gz.sha256 \
     --restore-operation OPERATION_ID
 
-  --restore-operation  Controlled code alignment for a target held by that
-                       restore operation: the SAME deployment mechanics, with
-                       a different runtime policy. The target stays in
-                       maintenance, its queue stays stopped, its scheduler
-                       stays held and its restore guard stays in place;
-                       `restore-target --resume` is the only thing that ends
-                       the hold. Migrations are refused in this mode.
+  deploy \
+    --target TARGET_ID \
+    --release v1.4.0-20260717-151500-a81d7f2 \
+    --artifact /path/to/release.tar.gz \
+    --checksum /path/to/release.tar.gz.sha256 \
+    --recovery-operation OPERATION_ID
+
+  --restore-operation   Controlled code alignment for a target held by that
+                        restore operation: the SAME deployment mechanics, with
+                        a different runtime policy. The target stays in
+                        maintenance, its queue stays stopped, its scheduler
+                        stays held and its restore guard stays in place;
+                        `restore-target --resume` is the only thing that ends
+                        the hold. Migrations are refused in this mode.
+
+  --recovery-operation  Controlled recovery deployment for a replacement host
+                        rebuilt by that recovery operation: again the SAME
+                        deployment mechanics, and again a different runtime
+                        policy. The host has no code at all yet; this installs
+                        the exact commit its recovered data belongs to, leaves
+                        its queue stopped, its scheduler held and its recovery
+                        guard in place, and leaves `previous` absent.
+                        `recover-host --resume` is the only thing that ends
+                        the hold. Migrations are refused in this mode.
+
+  The two operation flags are mutually exclusive: a target cannot be both a
+  live restore awaiting its code and a replacement host being rebuilt.
 USAGE
 }
 
@@ -173,6 +193,8 @@ parse_deploy_args() {
     RUN_MIGRATIONS=false
     RESTORE_OPERATION_ID=""
     RESTORE_OPERATION_SEEN=false
+    RECOVERY_OPERATION_ID=""
+    RECOVERY_OPERATION_SEEN=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -209,6 +231,13 @@ parse_deploy_args() {
                 RESTORE_OPERATION_SEEN=true
                 shift 2
                 ;;
+            --recovery-operation)
+                [[ "${RECOVERY_OPERATION_SEEN}" != true ]] || fail "--recovery-operation given more than once"
+                require_flag_value "--recovery-operation" "$#" "${2-}"
+                RECOVERY_OPERATION_ID="$2"
+                RECOVERY_OPERATION_SEEN=true
+                shift 2
+                ;;
             --help|-h)
                 usage
                 exit 0
@@ -227,16 +256,33 @@ parse_deploy_args() {
     [[ -n "${ARTIFACT}" ]] \
         || fail "--artifact is required"
 
+    # Rejected here, in parsing, so it can never depend on anything the rest of
+    # the pipeline observed. A target is either a live one whose restored data
+    # is waiting for its code, or a replacement machine being rebuilt — never
+    # both, and the safe reading of a claim that it is both is neither.
+    [[ "${RESTORE_OPERATION_SEEN}" != true ]] || [[ "${RECOVERY_OPERATION_SEEN}" != true ]] \
+        || fail "--restore-operation and --recovery-operation are mutually exclusive: a live restore awaiting code alignment and a host recovery awaiting its first code are different operations on different targets, and no deployment serves both"
+
     if [[ "${RESTORE_OPERATION_SEEN}" == true ]]; then
-        # Rejected here, in parsing, so it can never depend on anything the
-        # rest of the pipeline observed: an alignment installs the exact code
-        # a backup's data was taken under, and a migration is by definition a
-        # change to that data's shape. The two requests contradict each other,
-        # and the safe reading of a contradiction is neither of them.
+        # An alignment installs the exact code a backup's data was taken under,
+        # and a migration is by definition a change to that data's shape. The
+        # two requests contradict each other, and the safe reading of a
+        # contradiction is neither of them.
         [[ "${RUN_MIGRATIONS}" != true ]] \
             || fail "--migrate and --restore-operation are mutually exclusive: a controlled code alignment installs the exact commit the restored data belongs to and never migrates it"
 
         validate_operation_id "${RESTORE_OPERATION_ID}"
+    fi
+
+    if [[ "${RECOVERY_OPERATION_SEEN}" == true ]]; then
+        # Identical reasoning, and identically refused before a single byte
+        # moves: a recovery deployment installs the exact commit the RECOVERED
+        # data belongs to, so migrating it would change the shape of the very
+        # data the commit was chosen to match.
+        [[ "${RUN_MIGRATIONS}" != true ]] \
+            || fail "--migrate and --recovery-operation are mutually exclusive: a controlled recovery deployment installs the exact commit the recovered data belongs to and never migrates it"
+
+        validate_operation_id "${RECOVERY_OPERATION_ID}"
     fi
 }
 
@@ -567,11 +613,23 @@ perform_nightwatch_transition() {
 
 # Set by assert_restore_alignment_authorized. Empty in every normal deployment.
 RESTORE_OPERATION_ID=""
+RECOVERY_OPERATION_ID=""
 DEPLOY_HISTORY_START_EVENT="deployment-started"
 DEPLOY_HISTORY_FINISH_EVENT="deployment-finished"
 
 restore_alignment_mode() {
     [[ -n "${RESTORE_OPERATION_ID}" ]]
+}
+
+recovery_alignment_mode() {
+    [[ -n "${RECOVERY_OPERATION_ID}" ]]
+}
+
+# Either controlled mode. Both share every mechanic above the atomic switch and
+# both refuse the entire normal post-switch runtime transition; only the report
+# and the link policy afterwards differ.
+controlled_mode() {
+    restore_alignment_mode || recovery_alignment_mode
 }
 
 # assert_restore_alignment_authorized — everything that must be true before a
@@ -654,36 +712,127 @@ assert_restore_alignment_authorized() {
     log "controlled alignment authorized: ${TARGET_ID} is held by ${RESTORE_OPERATION_ID} and requires ${RESTORE_ALIGNMENT_REQUIRED_SHA}"
 }
 
-# assert_alignment_artifact_identity — the artifact really is the required
-# commit, checked against the extracted tree BEFORE current is switched.
+# assert_controlled_artifact_identity REQUIRED_SHA DESCRIPTION — the artifact
+# really is the required commit, checked against the extracted tree BEFORE
+# current is switched.
 #
-# The commit is the one the server read out of its own restore documents, never
-# one this invocation was told. An artifact built from anything else — a
+# The commit is the one the server read out of its own operation documents,
+# never one this invocation was told. An artifact built from anything else — a
 # branch, a near-miss commit, a rebuild of the wrong tree — is rejected while
 # the only thing on disk is a staged release directory the failure handler
 # removes.
-assert_alignment_artifact_identity() {
+#
+# One implementation for both controlled modes: "the artifact must be exactly
+# this commit" is the same proof whether the target is a held live one or a
+# replacement host, and two copies of it would be two places to weaken.
+assert_controlled_artifact_identity() {
+    local required_sha="$1" description="$2"
     local metadata="${TEMP_RELEASE_ROOT}/release.json"
     local artifact_sha artifact_release
 
     [[ ! -L "${metadata}" ]] \
-        || fail "artifact release.json is a symlink — refusing a controlled alignment against it"
+        || fail "artifact release.json is a symlink — refusing ${description} against it"
     [[ -f "${metadata}" ]] \
-        || fail "artifact contains no release.json — a controlled alignment cannot confirm which commit it is installing"
+        || fail "artifact contains no release.json — ${description} cannot confirm which commit it is installing"
 
     jq -e 'type == "object"' "${metadata}" >/dev/null 2>&1 \
-        || fail "artifact release.json is not a JSON object — a controlled alignment cannot confirm which commit it is installing"
+        || fail "artifact release.json is not a JSON object — ${description} cannot confirm which commit it is installing"
 
     artifact_sha="$(jq -r '.source_sha // empty' "${metadata}" 2>/dev/null || printf '')"
     artifact_release="$(jq -r '.release // empty' "${metadata}" 2>/dev/null || printf '')"
 
-    [[ "${artifact_sha}" == "${RESTORE_ALIGNMENT_REQUIRED_SHA}" ]] \
-        || fail "artifact was built from ${artifact_sha:-<unset>}, but restore operation ${RESTORE_OPERATION_ID} requires ${RESTORE_ALIGNMENT_REQUIRED_SHA} — refusing to align a target to code its restored data does not belong to"
+    [[ "${artifact_sha}" == "${required_sha}" ]] \
+        || fail "artifact was built from ${artifact_sha:-<unset>}, but ${description} requires ${required_sha} — refusing to install code the data on this target does not belong to"
 
     [[ "${artifact_release}" == "${RELEASE_ID}" ]] \
         || fail "artifact release.json names release ${artifact_release:-<unset>}, but this deployment is ${RELEASE_ID}"
 
     log "artifact identity confirmed: ${RELEASE_ID} built from ${artifact_sha}"
+}
+
+# --- controlled recovery deployment ------------------------------------------
+#
+# A replacement host rebuilt by recover-host holds the recovered data of a lost
+# machine and no code at all: `current` is absent, `previous` is absent, its
+# queue is stopped, its scheduler cron entry is held aside and a root-only
+# recovery guard says so. Exactly one operation may give it code — a deployment
+# of the exact commit that data belongs to, followed by `recover-host --resume`.
+#
+# That deployment is THIS script, for the same reason the restore alignment is:
+# duplicating the deployment algorithm is how the copy quietly stops matching
+# the original. What changes is the runtime policy afterwards.
+#
+#   normal      switch -> HTTP health check -> queue transition -> serving
+#   recovery    switch -> nothing that starts the target
+#
+# No health check treated as a success contract (the target has no runtime yet
+# and `recover-host --resume` is what health-checks it), no queue start, no
+# scheduler restoration, no `previous` written, and above all no removal of the
+# recovery guard.
+#
+# And the caller never says which commit is required. GitHub hands the server
+# an operation ID; the commit is read from the server's own recovery documents
+# by common's assert_recovery_alignment_operation, and the artifact is checked
+# against THAT.
+#
+# Unlike the restore alignment, this does NOT delegate a "still held" proof to
+# the operation's own orchestrator. There is nothing Supervisor-shaped to
+# re-derive here: a recovering host is one with no `current` and no `previous`,
+# which this script already reads directly and reads correctly. recover-host
+# itself is trusted tooling transported per run — deliberately not part of the
+# installed operational bundle — and a deployment that depended on a binary
+# which may not be on the host would fail for the wrong reason.
+assert_recovery_alignment_authorized() {
+    log "controlled recovery deployment requested for operation ${RECOVERY_OPERATION_ID}"
+
+    assert_recovery_alignment_operation "${TARGET_ID}" "${RUN_ROOT}" "${RECOVERY_OPERATION_ID}"
+
+    # A recovering host has no code. Both of these are read before anything is
+    # extracted, so a target that is actually deployed — and therefore is not
+    # being recovered at all — is refused while nothing has moved.
+    if [[ -e "${CURRENT_LINK}" ]] || [[ -L "${CURRENT_LINK}" ]]; then
+        fail "${TARGET_ID} already has ${CURRENT_LINK}: a controlled recovery deployment installs the FIRST code a rebuilt host receives, and this target is already serving something. Its recovery documents and its filesystem disagree; resolve that by hand"
+    fi
+
+    if [[ -e "${PREVIOUS_LINK}" ]] || [[ -L "${PREVIOUS_LINK}" ]]; then
+        fail "${TARGET_ID} has ${PREVIOUS_LINK} but no current: a rebuilt host has no release history at all, so a previous link here means something other than this recovery touched it"
+    fi
+
+    log "controlled recovery deployment authorized: ${TARGET_ID} was rebuilt by ${RECOVERY_OPERATION_ID} and requires ${RECOVERY_ALIGNMENT_REQUIRED_SHA} (backup ${RECOVERY_ALIGNMENT_BACKUP})"
+}
+
+# finalize_recovery_alignment — everything a controlled recovery deployment
+# does AFTER the atomic current switch and the PHP-FPM reload, and nothing else.
+#
+# What is deliberately absent is the entire normal post-switch sequence: no HTTP
+# health check (the target's queue and scheduler are still held, and
+# `recover-host --resume` is what proves it healthy), no queue transition, no
+# scheduler restoration, no Nightwatch transition (an observability sidecar
+# following a target that is not serving yet has nothing to observe, and
+# `--resume` is where the target actually comes up), and no touch of the
+# recovery guard.
+finalize_recovery_alignment() {
+    # `previous` is not written, and this is the whole of that decision: a
+    # rebuilt host has exactly one release, so there is no earlier one to roll
+    # back to. Synthesising a `previous` would point it at the release that was
+    # just installed, arming an ordinary rollback to "undo" the only code the
+    # recovered data belongs to. It stays absent until a normal deployment
+    # establishes a real one.
+    log "${LABEL} recovered host aligned to ${RELEASE_ID} (${RECOVERY_ALIGNMENT_REQUIRED_SHA}) and is STILL HELD"
+    log "previous is deliberately absent: a rebuilt host has no earlier release to roll back to"
+    log "recovery guard, queue and scheduler are unchanged — finish with: recover-host --resume --target ${TARGET_ID} --operation ${RECOVERY_OPERATION_ID}"
+
+    # Never "deployment-finished success": at this instant the target has code
+    # but is not serving, and a history that claims otherwise would be false for
+    # as long as the hold lasts. `recover-host --resume` writes the record that
+    # says the host came back.
+    append_history \
+        "${TARGET_ROOT}" \
+        "${DEPLOY_HISTORY_FINISH_EVENT}" \
+        "${RELEASE_ID}" \
+        "held"
+
+    TERMINAL_HISTORY_WRITTEN=true
 }
 
 # finalize_restore_alignment — everything a controlled alignment does AFTER the
@@ -829,22 +978,28 @@ handle_deployment_exit() {
         # deployment succeeds. Deliberately not resolved by removing the
         # program here — recovery does not own the operator's supervisor
         # registration. See runbooks/bootstrap-services.md.
-        if restore_alignment_mode; then
-            # A failed controlled alignment leaves the target HELD, on purpose
+        if controlled_mode; then
+            # A failed controlled deployment leaves the target HELD, on purpose
             # and in every case. The link recovery above already put `current`
             # (and `previous`) back where they were and reloaded PHP-FPM, which
-            # is the whole of what recovery may do here.
+            # is the whole of what recovery may do here — and for a recovering
+            # host "where they were" is ABSENT, which restore_link_state
+            # already expresses by unlinking.
             #
-            # What it must NOT do is anything that resumes the target: no queue
+            # What it must NOT do is anything that starts the target: no queue
             # start or restart, no `artisan up`, no scheduler restoration and
-            # no removal of the restore guard. The hold is not damage to be
-            # repaired — it is the correct state for a target whose data and
-            # code still disagree, and it stays until `restore-target --resume`
-            # proves otherwise.
-            log "controlled restore alignment failed; ${TARGET_ID} remains HELD — its maintenance mode, stopped queue, held scheduler and restore guard are all untouched by this recovery"
+            # no removal of either guard. The hold is not damage to be repaired
+            # — it is the correct state for a target whose data and code do not
+            # yet provably match — and it stays until the operation's own
+            # `--resume` says otherwise.
+            if restore_alignment_mode; then
+                log "controlled restore alignment failed; ${TARGET_ID} remains HELD — its maintenance mode, stopped queue, held scheduler and restore guard are all untouched by this recovery"
+            else
+                log "controlled recovery deployment failed; ${TARGET_ID} remains a HELD replacement host — its stopped queue, held scheduler and recovery guard are all untouched by this recovery, and its recovered data was never read"
+            fi
 
             if [[ "${CURRENT_SWITCHED}" == true ]] && [[ "${recovery_succeeded}" == false ]]; then
-                log "ERROR: the prior release links could NOT be restored after a failed alignment — ${TARGET_ID} is held with release pointers this script could not return to their previous state; do not resume it until an operator has inspected ${TARGET_ROOT}"
+                log "ERROR: the prior release links could NOT be restored after a failed controlled deployment — ${TARGET_ID} is held with release pointers this script could not return to their previous state; do not resume it until an operator has inspected ${TARGET_ROOT}"
             fi
         elif [[ "${SUPERVISOR_ACTIVATED_NOW}" == true ]]; then
             log "deployment failed after supervisor activation; stopping ${SUPERVISOR_PROGRAM} (it was not active before this deployment)"
@@ -981,8 +1136,13 @@ perform_deploy() {
         DEPLOY_HISTORY_FINISH_EVENT="restore-alignment-finished"
 
         assert_restore_alignment_authorized
+    elif recovery_alignment_mode; then
+        DEPLOY_HISTORY_START_EVENT="recovery-alignment-started"
+        DEPLOY_HISTORY_FINISH_EVENT="recovery-alignment-finished"
+
+        assert_recovery_alignment_authorized
     else
-        assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a deployment"
+        assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a deployment"
     fi
     # --- restore interlock (end) ---
 
@@ -1164,7 +1324,13 @@ perform_deploy() {
     # long before current could point at it.
     # --- controlled alignment artifact identity (begin) ---
     if restore_alignment_mode; then
-        assert_alignment_artifact_identity
+        assert_controlled_artifact_identity \
+            "${RESTORE_ALIGNMENT_REQUIRED_SHA}" \
+            "restore operation ${RESTORE_OPERATION_ID}"
+    elif recovery_alignment_mode; then
+        assert_controlled_artifact_identity \
+            "${RECOVERY_ALIGNMENT_REQUIRED_SHA}" \
+            "recovery operation ${RECOVERY_OPERATION_ID}"
     fi
     # --- controlled alignment artifact identity (end) ---
 
@@ -1291,6 +1457,12 @@ perform_deploy() {
     # both modes; everything below is the runtime policy that differs.
     if restore_alignment_mode; then
         finalize_restore_alignment
+
+        return 0
+    fi
+
+    if recovery_alignment_mode; then
+        finalize_recovery_alignment
 
         return 0
     fi

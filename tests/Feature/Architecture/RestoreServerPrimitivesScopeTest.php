@@ -209,23 +209,25 @@ it('reaches restore only through one wrapper, granted to the existing deploy acc
 // No Recover, no production activation
 // =============================================================================
 
-it('implements no Recover Host', function () {
-    foreach ([
-        'infrastructure/scripts/recover-host',
-        '.github/workflows/recover-staging-host.yml',
-        '.github/workflows/recover-production-host.yml',
-        '.github/actions/recover-rateguru-host/action.yml',
-    ] as $path) {
-        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to a later phase, not 7.3");
-    }
-
-    // Recovery rebuilds an application from the backup's source_sha. Restore
-    // reads that commit to DECIDE alignment, and never builds anything.
+it('keeps Recover Host a separate operation that the restore primitives never become', function () {
+    // Host recovery now exists as its own server primitive and its own
+    // transport action. What must NEVER exist inside the restore primitives is
+    // any of it: restore-target reads a backup's source_sha to DECIDE
+    // alignment, and never builds, checks out or rebuilds anything.
     $restore = File::get(base_path('infrastructure/scripts/restore-target'));
 
     foreach (['composer', 'npm ', 'node ', 'vite', 'build-rateguru', 'git clone', 'git checkout'] as $forbidden) {
         expect($restore)->not->toContain($forbidden, "restore-target must never build: {$forbidden}");
     }
+
+    // And a live restore still requires a DEPLOYED target — the one structural
+    // line that keeps the two operations from ever meeting.
+    expect($restore)->toContain('a live data restore requires a deployed target');
+
+    // The recovery primitive is the mirror image: it refuses a target that has
+    // a current release at all.
+    expect(File::get(base_path('infrastructure/scripts/recover-host')))
+        ->toContain('this target is deployed, so it is not a lost host being rebuilt');
 });
 
 it('activates no production target and changes no DNS', function () {

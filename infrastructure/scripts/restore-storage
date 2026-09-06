@@ -271,7 +271,7 @@ discard_partial_stage() {
 }
 
 perform_stage() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" database-staged
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" stage-storage
 
     assert_live_app_canonical
     restore_assert_backup_regular_file "${SELECTED_BACKUP_DIR}" storage-app.tar.gz
@@ -332,7 +332,7 @@ perform_stage() {
 # --- activate ---------------------------------------------------------------------------
 
 perform_activate() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" database-activated
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" activate-storage
 
     assert_live_app_canonical
 
@@ -367,12 +367,12 @@ perform_activate() {
 # Driven by what is actually on disk, not by how far the caller believes
 # activation got.
 perform_compensate() {
-    # emergency-backup-verified is included deliberately: when the DATABASE
-    # activation failed, restore-target still compensates both halves, and
+    # The kind's own pre-activation phase is included in the compensation set
+    # deliberately (see the table in restore-common): when the DATABASE
+    # activation failed, the orchestrator still compensates both halves, and
     # this one must be allowed to run and find nothing to undo. The same
     # applies to a storage activation that failed between its two renames.
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" \
-        emergency-backup-verified database-activated storage-activated verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" compensate
 
     local live_exists=false pre_exists=false
 
@@ -419,7 +419,7 @@ perform_compensate() {
 # --- commit --------------------------------------------------------------------------------
 
 perform_commit() {
-    restore_state_require_phase "${STATE_FILE}" "${TARGET_ID}" verified
+    restore_require_step_phase "${STATE_FILE}" "${TARGET_ID}" commit
 
     if [[ -e "${PRE_RESTORE_APP}" ]] || [[ -L "${PRE_RESTORE_APP}" ]]; then
         restore_remove_storage_sibling "${STORAGE_ROOT}" "${PRE_RESTORE_APP}"

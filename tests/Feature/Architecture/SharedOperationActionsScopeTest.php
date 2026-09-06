@@ -67,6 +67,10 @@ it('has exactly one build, one deploy and one rollback implementation', function
         // never a per-environment fork of any of them.
         'prepare-rateguru-host',
         'record-rateguru-deployment',
+        // One RECOVER implementation, covering all four of its modes. Transport
+        // only: it carries no material, names no commit and cannot build,
+        // deploy, restore, repair or prepare.
+        'recover-rateguru-host',
         // One REPAIR implementation, covering both environments. Transport
         // only: it carries no material and cannot deploy, restore or prepare.
         'repair-rateguru-target',
@@ -274,14 +278,16 @@ it('implements nothing from Repair Target onwards', function () {
     // RestoreServerPrimitivesScopeTest, RestoreOperatorSurfaceScopeTest), and
     // target-scoped repair followed. Recover remains future work, and nothing
     // may ship an implementation of it.
+    // Target-scoped repair and host recovery both landed after this work, each
+    // with its own scope guard. What remains future work is the OPERATOR
+    // surface for recovery — the named workflows that press the button and the
+    // disposable-host rehearsal behind them.
     foreach ([
-        'infrastructure/scripts/recover-host',
         '.github/workflows/recover-staging.yml',
         '.github/workflows/recover-production.yml',
-        '.github/actions/recover-rateguru-host/action.yml',
     ] as $futureWork) {
         expect(File::exists(base_path($futureWork)))
-            ->toBeFalse("{$futureWork} is Repair Target+ work and must not exist yet");
+            ->toBeFalse("{$futureWork} is later work and must not exist yet");
     }
 
     // restore-test stays what it always was: a scratch-database integrity

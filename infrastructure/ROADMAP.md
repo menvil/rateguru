@@ -1157,8 +1157,8 @@ Slices, in order:
    PASS and the guard cleared). CI proves the structure and every failure
    path; only a real run proves the pipeline, so this slice is implemented,
    awaiting real GitHub staging acceptance rather than accepted.
-5. **7.5 Repair Target — implemented, awaiting real GitHub staging
-   acceptance.** The host is alive, the host runtime is intact, the target is
+5. **7.5 Repair Target — ACCEPTED on the real staging VPS.** The host is
+   alive, the host runtime is intact, the target is
    registered, active and has a real deployed release — and only that target's
    OWN infrastructure has drifted. Converge it back onto what is committed,
    without rebuilding the VPS, without touching another target, and above all
@@ -1225,26 +1225,105 @@ Slices, in order:
      identity only. The workflow branches on that object, never on prose.
 
    See [`runbooks/repair-target.md`](runbooks/repair-target.md).
-   *Acceptance:* a deliberately damaged staging target — a wrong mode on a
-   target directory, a removed Nginx enabled link, a deleted scheduler cron
-   and a stopped queue — is repaired in place through the GitHub workflow and
-   verifies clean, with `current`, `previous` and `shared/.env` byte-identical
-   afterwards. CI proves the structure and every refusal path; only a real run
-   proves the pipeline, so this slice is implemented, awaiting real GitHub
-   staging acceptance rather than accepted.
-6. **7.6 Recover Host.** Full replacement-server recovery: new Ubuntu VPS →
-   Prepare Host (7.2) → recover secrets/environment → restore database and
-   storage (7.3) → rebuild the application from the backup's own
-   `release.json.source_sha` through the 7.1 build implementation → deploy
-   → start the target → health check. Explicitly distinct from restore-test:
-   restore-test answers "can this backup technically be restored?"; 7.6
-   answers "can the entire host disappear and the application be
-   reconstructed?". *Future work only.*
-7. **7.7 GitHub Recover + clean-host rehearsal.** Turn 7.6 into a
-   repeatable operator workflow and rehearse it against a disposable host
-   under the disposable-rehearsal policy below, including application-level
-   recovery verification: Laravel boots, migration state is coherent,
-   storage/media works, queues and the scheduler work. *Future work only.*
+
+   **Accepted on the real staging VPS (`PHASE 7 SLICE 7.5 ACCEPTED`):** the
+   bootstrap/recovery credential was configured for the staging environment and
+   a no-op Repair passed against an undamaged target first. Damage was then
+   introduced deliberately — the Nginx enabled link removed, the scheduler cron
+   entry deleted, and the staging queue program stopped — and Repair restored
+   all three. The release and its source SHA were unchanged afterwards,
+   `shared/.env` and the storage tree were untouched, and the database and
+   storage sentinels planted beforehand survived. The run also found real drift
+   nobody had planted: a target directory at `0750` where the contract requires
+   `2750`, detected and repaired in the same pass. A subsequent no-op run
+   reported `DRIFT 0 / MISSING 0`, `changed=false` and health pass.
+6. **7.6 Recover Host — implemented, awaiting the disposable-host acceptance
+   in 7.7.** The old machine is gone. A brand-new VPS is prepared, filled from
+   one exact offsite backup, and given code built from that backup's own
+   commit:
+
+       LOST HOST + OFFSITE BACKUP + GIT SOURCE
+         -> a new healthy host
+         -> the SAME backup data
+         -> code built from that backup's exact source_sha
+
+   Explicitly distinct from restore-test, which answers "can this backup
+   technically be restored?"; this answers "can the entire host disappear and
+   the application be reconstructed?".
+
+   What landed:
+
+   - **One new server primitive.** `infrastructure/scripts/recover-host`
+     (`--check` / `--apply` / `--inspect` / `--resume` / `--verify`) owns the
+     recovery state machine and nothing else. It downloads nothing, verifies no
+     checksum, parses no manifest and runs no `pg_restore` of its own: the
+     existing `fetch-backup`, `verify-backup`, `restore-database` and
+     `restore-storage` primitives do all of that, exactly as they do for a live
+     restore.
+   - **A strict, regression-tested PRE_DEPLOY/EMPTY contract**, derived from the
+     state Prepare Host actually produces: no `current`, no `previous`, no
+     release directories, a canonical database with zero public tables, a
+     storage tree that is absent or empty, a queue with nothing running, and
+     neither guard present. Unknown data is never treated as old and unwanted —
+     nothing is dropped, truncated or deleted, and the run refuses instead.
+   - **Offsite only, one exact backup.** No `--source` selector, no `latest`,
+     no fallback, and no remote/bucket/path input anywhere: a recovery models
+     the loss of the machine those local backups lived on.
+   - **The `.env` equality rule.** After verification the backup's
+     `environment.env` is compared byte-for-byte against the prepared
+     `shared/.env` and the recovery fails closed on a difference — before any
+     activation. Neither file's content, digest or length ever reaches the
+     output. `server-configuration.tar.gz` stays part of a verified backup and
+     is never unpacked: it is a diagnostic snapshot, not an executable source
+     of truth.
+   - **Generalized restore primitives, with the live path unchanged.**
+     Operation state now records an `operation_kind` (`target-restore` or
+     `host-recovery`), read from trusted persisted state rather than from any
+     command line, and `restore-database`/`restore-storage` look their allowed
+     phases up in one table. Recovery gets `recovery-activation-authorized`
+     rather than forging `emergency-backup-verified` for an emergency backup it
+     never took. State written before the field existed is interpreted as a
+     live target restore, and every live-restore phase gate is byte-for-byte
+     what it was.
+   - **Its own guard, namespace and journal.**
+     `run/recoveries/<target>/recovery-guard` and
+     `recoveries/recovery-history.jsonl` are separate from the restore ones,
+     because they are separate state machines with separate endings. One shared
+     fail-closed gate in `common` understands both, and both guards present at
+     once is a hard failure.
+   - **Controlled recovery deployment through the SAME deploy.**
+     `deploy --recovery-operation` installs the exact commit and nothing else:
+     no migration, no queue start, no scheduler restoration, no guard removal,
+     no health check treated as a success contract, and `previous` deliberately
+     left absent. GitHub never names the commit — the server reads it from its
+     own recovery documents.
+   - **One reusable transport action.**
+     `.github/actions/recover-rateguru-host` carries the trusted `develop`
+     bundle to a replacement host over the BOOTSTRAP credential with strict
+     `known_hosts`, runs one fixed argv, parses exactly one machine-readable
+     result and cleans up on success and failure alike. It accepts no command,
+     path, remote, bucket, release or source SHA.
+   - **No durable artifact archive, still.** Recovery rebuilds from
+     `release.json.source_sha` with the current trusted build tooling; the only
+     artifact involved is the short-lived GitHub Actions one that carries a
+     build to its deploy job.
+
+   See [`runbooks/recover-host.md`](runbooks/recover-host.md).
+   *Acceptance:* a genuinely disposable replacement host, recovered end to end.
+   CI proves the structure, the preconditions, the compensation and every
+   refusal path; only a real clean replacement machine proves the pipeline, and
+   that rehearsal belongs to 7.7 — so this slice is implemented, not accepted.
+7. **7.7 GitHub Recover + clean-host rehearsal.** Turn the 7.6 mechanisms
+   into named operator workflows — `recover-staging.yml` and
+   `recover-production.yml`, including the historical exact-SHA build job with
+   `contents: read`, no GitHub Environment and no SSH, B2 or Sentry credential
+   — and rehearse the whole chain against a disposable host under the
+   disposable-rehearsal policy below, including application-level recovery
+   verification: Laravel boots, migration state is coherent, storage/media
+   works, queues and the scheduler work. Also where the deployment marker is
+   recorded, through the existing `record-rateguru-deployment`, only after the
+   recovery deployment, `recover-host --resume` and a passing health check.
+   *Future work only.*
    *Acceptance:* a disposable host is recovered end to end from a workflow
    dispatch, without hand-run commands.
 8. **7.8 Full DR acceptance, measured RPO and RTO.** Turn recovery

@@ -41,6 +41,7 @@ it('adds exactly one restore action, two operator workflows and one server wrapp
         'deploy-rateguru',
         'prepare-rateguru-host',
         'record-rateguru-deployment',
+        'recover-rateguru-host',
         'repair-rateguru-target',
         'restore-rateguru',
         'rollback-rateguru',
@@ -240,37 +241,53 @@ it('offers no target selector and no commit input anywhere', function () {
 // =============================================================================
 
 it('makes every ordinary target mutation refuse while a restore guard exists', function () {
+    // One call each, and it is the COMBINED gate: an ordinary operation does
+    // not care whether a restore or a host recovery owns the target, only that
+    // one does. A per-guard call at each site is what would eventually leave
+    // one script checking five guards and another checking four.
     foreach (['backup', 'deploy', 'rollback', 'cleanup'] as $script) {
         $source = File::get(base_path('infrastructure/scripts/'.$script));
 
-        expect(substr_count($source, 'assert_no_restore_hold'))->toBe(
+        expect(substr_count($source, 'assert_no_operation_hold'))->toBe(
             1,
-            "{$script} must consult the restore guard exactly once",
+            "{$script} must consult the data-operation guards exactly once",
         );
+
+        expect($source)->not->toContain('assert_no_restore_hold')
+            ->not->toContain('assert_no_recovery_hold');
     }
+
+    // And the combined gate really consults both, plus the impossible
+    // both-at-once state, in that order.
+    $gate = shellFunctionBody(File::get(base_path('infrastructure/scripts/common')), 'assert_no_operation_hold');
+
+    expect($gate)
+        ->toContain('assert_no_conflicting_operation_holds')
+        ->toContain('assert_no_restore_hold')
+        ->toContain('assert_no_recovery_hold');
 
     // And each one does it BEFORE its own first mutation, measured inside the
     // pipeline function that actually runs them.
     $deploy = shellFunctionBody(File::get(base_path('infrastructure/scripts/deploy')), 'perform_deploy');
 
-    expect(mb_strpos($deploy, 'assert_no_restore_hold'))
+    expect(mb_strpos($deploy, 'assert_no_operation_hold'))
         ->toBeLessThan(mb_strpos($deploy, 'append_history \\'));
 
     $rollback = shellFunctionBody(File::get(base_path('infrastructure/scripts/rollback')), 'perform_rollback');
 
-    expect(mb_strpos($rollback, 'assert_no_restore_hold'))
+    expect(mb_strpos($rollback, 'assert_no_operation_hold'))
         ->toBeLessThan(mb_strpos($rollback, 'validate_releases_root'));
 
     $cleanup = shellFunctionBody(File::get(base_path('infrastructure/scripts/cleanup')), 'perform_apply');
 
-    expect(mb_strpos($cleanup, 'assert_no_restore_hold'))
+    expect(mb_strpos($cleanup, 'assert_no_operation_hold'))
         ->toBeLessThan(mb_strpos($cleanup, 'ensure_pinned_file_exists'));
 
     // Each refusal is also under the target's own deployment lock, so it
     // cannot race a restore that is about to take the same lock.
     foreach ([$deploy, $rollback, $cleanup] as $pipeline) {
         expect(mb_strpos($pipeline, 'acquire_deployment_lock'))
-            ->toBeLessThan(mb_strpos($pipeline, 'assert_no_restore_hold'));
+            ->toBeLessThan(mb_strpos($pipeline, 'assert_no_operation_hold'));
     }
 
     // Only restore-target may write or clear a guard. Nothing else in the
@@ -328,14 +345,13 @@ it('never migrates, health-checks or resumes a target during a controlled alignm
 // No Recover, no production activation
 // =============================================================================
 
-it('implements no Recover Host', function () {
-    foreach ([
-        'infrastructure/scripts/recover-host',
-        '.github/workflows/recover-staging-host.yml',
-        '.github/workflows/recover-production-host.yml',
-        '.github/actions/recover-rateguru-host/action.yml',
-    ] as $path) {
-        expect(File::exists(base_path($path)))->toBeFalse("{$path} belongs to a later phase, not 7.4");
+it('keeps the restore operator surface free of Recover Host', function () {
+    // Host recovery has its own transport action and its own operator
+    // workflows still to come. The RESTORE surface must not grow either: the
+    // restore workflows drive restore-target and nothing else.
+    foreach (glob(base_path('.github/workflows/restore-*.yml')) ?: [] as $path) {
+        expect(File::get($path))->not->toContain('recover-host')
+            ->not->toContain('recover-rateguru-host');
     }
 
     // --inspect refuses the two guard states that need manual recovery rather

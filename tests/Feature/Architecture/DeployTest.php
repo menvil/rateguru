@@ -2939,9 +2939,9 @@ it('refuses an artifact that was not built from the required commit, before swit
         deployOpsCleanup($scratch);
     }
 })->with([
-    ['wrong-commit', ['sha' => DEPLOY_OPS_CURRENT_SHA], 'refusing to align a target to code its restored data does not belong to'],
+    ['wrong-commit', ['sha' => DEPLOY_OPS_CURRENT_SHA], 'refusing to install code the data on this target does not belong to'],
     ['no-release-json', ['release_json' => false], 'artifact contains no release.json'],
-    ['no-source-sha', ['sha' => null], 'refusing to align a target to code its restored data does not belong to'],
+    ['no-source-sha', ['sha' => null], 'refusing to install code the data on this target does not belong to'],
     ['release-mismatch', ['release' => 'v9.9.9-20260101-000000-a81d7f2'], 'names release v9.9.9-20260101-000000-a81d7f2'],
 ]);
 
@@ -3130,3 +3130,460 @@ it('restores the prior release but still keeps the target held when an alignment
         deployOpsCleanup($scratch);
     }
 });
+
+// =============================================================================
+// Controlled recovery deployment
+// =============================================================================
+//
+// The other controlled mode: a replacement host rebuilt by recover-host holds
+// the recovered data of a lost machine and no code at all. Exactly one
+// deployment may give it code — this one, installing the exact commit that data
+// belongs to — and it must leave the host every bit as held afterwards as it
+// found it, with `previous` never invented.
+//
+// Everything below drives the SAME deploy the tests above drive. The
+// authorization half is read from the two persisted recovery documents; unlike
+// the restore alignment there is no runtime hold to re-prove, because a
+// recovering host has no `current` at all.
+
+const DEPLOY_OPS_RECOVERY_OPERATION = '20260902-131415-d4e5f6';
+
+function deployOpsRecoveryGuardPath(string $scratch): string
+{
+    return deployOpsRunRoot($scratch).'/recoveries/parity-target/recovery-guard';
+}
+
+/** @param  array<string, string|null>  $overrides */
+function deployOpsWriteRecoveryGuard(string $scratch, array $overrides = []): void
+{
+    $path = deployOpsRecoveryGuardPath($scratch);
+
+    if (! is_dir(dirname($path))) {
+        expect(@mkdir(dirname($path), 0o700, true))->toBeTrue('could not create the recovery run root');
+    }
+
+    $guard = array_filter(array_merge([
+        'operation' => DEPLOY_OPS_RECOVERY_OPERATION,
+        'target' => 'parity-target',
+        'backup' => '20260115-023000',
+        'required_source_sha' => DEPLOY_OPS_REQUIRED_SHA,
+        'status' => 'awaiting-code',
+        'created_at' => '2026-09-02T13:14:15Z',
+    ], $overrides), static fn ($value): bool => $value !== null);
+
+    file_put_contents($path, json_encode($guard, JSON_PRETTY_PRINT));
+    chmod($path, 0o600);
+}
+
+/** @param  array<string, string|null>  $overrides */
+function deployOpsWriteRecoveryState(string $scratch, array $overrides = []): void
+{
+    $path = deployOpsRunRoot($scratch).'/recoveries/parity-target/'
+        .DEPLOY_OPS_RECOVERY_OPERATION.'/state.json';
+
+    if (! is_dir(dirname($path))) {
+        expect(@mkdir(dirname($path), 0o700, true))->toBeTrue('could not create the recovery operation workspace');
+    }
+
+    $state = array_filter(array_merge([
+        'operation_kind' => 'host-recovery',
+        'operation' => DEPLOY_OPS_RECOVERY_OPERATION,
+        'target' => 'parity-target',
+        'environment' => 'staging',
+        'backup_namespace' => 'parity',
+        'source' => 'offsite',
+        'backup' => '20260115-023000',
+        'backup_release' => DEPLOY_OPS_ALIGNMENT_RELEASE,
+        'backup_source_sha' => DEPLOY_OPS_REQUIRED_SHA,
+        'status' => 'awaiting-code',
+        'phase' => 'awaiting-code',
+        'data_restored' => 'true',
+    ], $overrides), static fn ($value): bool => $value !== null);
+
+    file_put_contents($path, json_encode($state, JSON_PRETTY_PRINT));
+    chmod($path, 0o600);
+}
+
+/** Both recovery documents in the one state a controlled recovery deployment may run in. */
+function deployOpsWriteAwaitingCodeRecovery(string $scratch, array $guard = [], array $state = []): void
+{
+    deployOpsWriteRecoveryGuard($scratch, $guard);
+    deployOpsWriteRecoveryState($scratch, $state);
+}
+
+// --- parsing ------------------------------------------------------------------
+
+it('refuses --recovery-operation together with --migrate, before anything is resolved', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        [$exit, $output] = deployOpsRunHarness(
+            $scratch,
+            'parse_deploy_args --target parity-target --release v1.0.0-20260101-000000-aaa4444'
+                .' --artifact /tmp/x.tar.gz --migrate --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+            deployOpsBaseEnv($scratch),
+        );
+
+        expect($exit)->not->toBe(0);
+        expect($output)->toContain('--migrate and --recovery-operation are mutually exclusive');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('refuses --restore-operation and --recovery-operation together', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        [$exit, $output] = deployOpsRunHarness(
+            $scratch,
+            'parse_deploy_args --target parity-target --release v1.0.0-20260101-000000-aaa5555'
+                .' --artifact /tmp/x.tar.gz'
+                .' --restore-operation '.DEPLOY_OPS_RESTORE_OPERATION
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+            deployOpsBaseEnv($scratch),
+        );
+
+        expect($exit)->not->toBe(0);
+        expect($output)->toContain('--restore-operation and --recovery-operation are mutually exclusive');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('refuses a malformed recovery operation ID', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        [$exit, $output] = deployOpsRunHarness(
+            $scratch,
+            'parse_deploy_args --target parity-target --release v1.0.0-20260101-000000-aaa6666'
+                .' --artifact /tmp/x.tar.gz --recovery-operation ../../etc/passwd',
+            deployOpsBaseEnv($scratch),
+        );
+
+        expect($exit)->not->toBe(0);
+        expect($output)->toContain('invalid restore operation ID');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+// --- authorization -------------------------------------------------------------
+
+it('refuses a recovery deployment when nothing is being recovered', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])
+            ->toContain('is not being recovered: no recovery guard')
+            ->toContain('an ordinary deployment needs no recovery operation');
+
+        expect(deployOpsHistory($fixture['root']))->toBe([]);
+        expect(is_link($fixture['root'].'/current'))->toBeFalse();
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('refuses a recovery deployment on every disagreement between the two documents', function (array $guard, array $state, string $expected) {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+        deployOpsWriteAwaitingCodeRecovery($scratch, $guard, $state);
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])->toContain($expected);
+
+        // Nothing moved: no history, no release directory, no current.
+        expect(deployOpsHistory($fixture['root']))->toBe([]);
+        expect(is_link($fixture['root'].'/current'))->toBeFalse();
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+})->with([
+    'a guard for another target' => [
+        ['target' => 'somebody-else'], [], 'belongs to target somebody-else',
+    ],
+    'a guard for another operation' => [
+        ['operation' => '20260101-000000-aaaaaa'], [],
+        'is being recovered by operation 20260101-000000-aaaaaa',
+    ],
+    'a recovery still in progress' => [
+        ['status' => 'in-progress'], [], "has status 'in-progress', not 'awaiting-code'",
+    ],
+    'a failed-held recovery' => [
+        ['status' => 'failed-held'], [], "has status 'failed-held', not 'awaiting-code'",
+    ],
+    'an abbreviated commit' => [
+        ['required_source_sha' => 'a81d7f2'], [], 'carries no full 40-character commit',
+    ],
+    'a state that is not a host recovery' => [
+        [], ['operation_kind' => 'target-restore'], "records operation_kind 'target-restore'",
+    ],
+    'documents that disagree about the commit' => [
+        [], ['backup_source_sha' => 'b92e8a3d4c5a6a79889900bbccddeeff11223344'],
+        'refusing to deploy into a host whose own recovery documents disagree',
+    ],
+    'documents that disagree about the backup' => [
+        [], ['backup' => '20260101-000000'],
+        'refusing to deploy into a host whose own recovery documents disagree',
+    ],
+    'a state in the wrong phase' => [
+        [], ['phase' => 'verified'], "is in phase 'verified', expected awaiting-code",
+    ],
+]);
+
+it('refuses a recovery deployment onto a target that already has a current release', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsServingFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+
+        $originalCurrent = realpath($fixture['root'].'/current');
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])
+            ->toContain('a controlled recovery deployment installs the FIRST code a rebuilt host receives');
+
+        expect(realpath($fixture['root'].'/current'))->toBe($originalCurrent);
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('refuses an artifact built from anything but the required commit, before current is switched', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture, DEPLOY_OPS_ALIGNMENT_RELEASE, DEPLOY_OPS_CURRENT_SHA);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])
+            ->toContain('artifact was built from '.DEPLOY_OPS_CURRENT_SHA)
+            ->toContain('recovery operation '.DEPLOY_OPS_RECOVERY_OPERATION.' requires '.DEPLOY_OPS_REQUIRED_SHA);
+
+        // Rejected while the only thing on disk was a staged directory.
+        expect(is_link($fixture['root'].'/current'))->toBeFalse();
+        expect(is_dir($fixture['root'].'/releases/'.DEPLOY_OPS_ALIGNMENT_RELEASE))->toBeFalse();
+        expect(glob($fixture['root'].'/releases/.*.tmp-*') ?: [])->toBe([]);
+
+        // The guard is untouched.
+        expect(is_file(deployOpsRecoveryGuardPath($scratch)))->toBeTrue();
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+// --- the successful recovery deployment ----------------------------------------
+
+it('installs the exact commit and leaves the rebuilt host held, with previous absent', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+        file_put_contents($scratch.'/supervisorctl.log', '');
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+        );
+
+        expect($result['exit'])->toBe(0, $result['output']);
+
+        // current points at the rebuilt release.
+        expect(basename(realpath($fixture['root'].'/current')))->toBe(DEPLOY_OPS_ALIGNMENT_RELEASE);
+
+        // previous stays ABSENT: a rebuilt host has no earlier release, and
+        // synthesising one would arm a rollback to undo the recovery.
+        expect(is_link($fixture['root'].'/previous'))->toBeFalse();
+        expect(file_exists($fixture['root'].'/previous'))->toBeFalse();
+        expect($result['output'])->toContain('previous is deliberately absent');
+
+        // Nothing that resumes the target.
+        expect(File::get($result['healthCheckLog']))->toBe('', 'a recovery deployment never health-checks a held host');
+        expect(deployOpsSupervisorctlLog($scratch))->not->toContain('supervisorctl start parity-queue:*');
+        expect(deployOpsSupervisorctlLog($scratch))->not->toContain('supervisorctl restart parity-queue:*');
+        expect($result['output'])
+            ->not->toContain('artisan up')
+            ->not->toContain('deployed successfully');
+
+        // No migration, ever.
+        expect($result['output'])->not->toContain('running database migrations');
+
+        // The guard is untouched, and recover-host --resume is what ends it.
+        expect(is_file(deployOpsRecoveryGuardPath($scratch)))->toBeTrue();
+        expect(json_decode(File::get(deployOpsRecoveryGuardPath($scratch)), true)['status'])->toBe('awaiting-code');
+        expect($result['output'])->toContain('recover-host --resume --target parity-target');
+
+        // And it never consulted restore-target: a recovering host has no
+        // Supervisor-shaped hold to re-prove.
+        expect(File::get($result['restoreTargetLog']))->toBe('');
+
+        // The history says held, never success.
+        $history = deployOpsHistory($fixture['root']);
+        expect(array_column($history, 'event'))
+            ->toBe(['recovery-alignment-started', 'recovery-alignment-finished']);
+        expect(end($history)['status'])->toBe('held');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('leaves a rebuilt host held when a recovery deployment fails after the switch', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+        file_put_contents($scratch.'/supervisorctl.log', '');
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' --recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION,
+            ['systemctl_fails' => true],
+        );
+
+        expect($result['exit'])->not->toBe(0, $result['output']);
+
+        // Recovery put the links back where they were — which, on a rebuilt
+        // host, is ABSENT.
+        expect(is_link($fixture['root'].'/current'))->toBeFalse();
+        expect(is_link($fixture['root'].'/previous'))->toBeFalse();
+
+        expect($result['output'])
+            ->toContain('controlled recovery deployment failed')
+            ->toContain('remains a HELD replacement host');
+
+        // No queue recovery, no guard removal, no health check.
+        expect(is_file(deployOpsRecoveryGuardPath($scratch)))->toBeTrue();
+        expect(File::get($result['healthCheckLog']))->toBe('');
+        expect(deployOpsSupervisorctlLog($scratch))->not->toContain('supervisorctl start parity-queue:*');
+
+        $history = deployOpsHistory($fixture['root']);
+        $finished = end($history);
+        expect($finished['event'])->toBe('recovery-alignment-finished');
+        expect($finished['status'])->not->toBe('success');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('refuses an ordinary deployment while a recovery owns the target', function () {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+
+        $releaseId = 'v1.0.0-20260101-000000-aaa7777';
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            "--target parity-target --release {$releaseId} --artifact ".$fixture['artifact'],
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])
+            ->toContain('is being recovered onto a replacement host by recovery operation '.DEPLOY_OPS_RECOVERY_OPERATION)
+            ->toContain('is not finished being rebuilt');
+
+        expect(is_dir($fixture['root'].'/releases/'.$releaseId))->toBeFalse();
+        expect(deployOpsHistory($fixture['root']))->toBe([]);
+        expect(File::get($result['healthCheckLog']))->toBe('');
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+});
+
+it('treats both guards at once as a hard failure, in every deployment mode', function (string $arguments) {
+    $scratch = deployOpsScratchDir();
+
+    try {
+        $fixture = deployOpsBuildFixture($scratch);
+        $artifact = deployOpsAlignmentArtifact($scratch, $fixture);
+        deployOpsWriteHeldRestore($scratch);
+        deployOpsWriteAwaitingCodeRecovery($scratch);
+
+        $result = deployOpsRunDeployOn(
+            $scratch,
+            $fixture,
+            '--target parity-target --release '.DEPLOY_OPS_ALIGNMENT_RELEASE
+                .' --artifact '.$artifact['artifact']
+                .' --checksum '.$artifact['checksum']
+                .' '.$arguments,
+        );
+
+        expect($result['exit'])->not->toBe(0);
+        expect($result['output'])
+            ->toContain('carries BOTH a restore guard')
+            ->toContain('resolve it by hand');
+
+        expect(deployOpsHistory($fixture['root']))->toBe([]);
+        expect(is_link($fixture['root'].'/current'))->toBeFalse();
+    } finally {
+        deployOpsCleanup($scratch);
+    }
+})->with([
+    'ordinary' => [''],
+    'restore alignment' => ['--restore-operation '.DEPLOY_OPS_RESTORE_OPERATION],
+    'recovery deployment' => ['--recovery-operation '.DEPLOY_OPS_RECOVERY_OPERATION],
+]);

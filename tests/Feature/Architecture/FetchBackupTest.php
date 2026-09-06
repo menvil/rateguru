@@ -48,64 +48,6 @@ function fetchBackupWorkspace(string $scratch, string $operationId): string
     return $scratch.'/run/restores/parity-target/'.$operationId;
 }
 
-/**
- * An rclone stub that serves exactly one fixed remote directory tree from
- * disk, and records every argument vector it was given — so a test can prove
- * the remote path was composed from the registry and the fixed bucket rather
- * than from anything a caller supplied.
- */
-function fetchBackupRcloneStub(string $scratch): string
-{
-    return writeExecutable($scratch.'/bin/rclone', <<<'BASH'
-#!/usr/bin/env bash
-set -uo pipefail
-printf '%s\n' "rclone $*" >> "${RGTEST_RCLONE_LOG}"
-
-# rclone --config X copy SOURCE DEST [flags...]
-source_path=""
-dest_path=""
-seen_copy=false
-positional=0
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        copy) seen_copy=true; shift ;;
-        --config) shift 2 ;;
-        # `--stats 10s` takes a value; every other flag rclone is given here
-        # is a bare switch. Counting positionals rather than taking "the last
-        # bare token" is what keeps a flag value out of the destination path.
-        --stats) shift 2 ;;
-        --*) shift ;;
-        *)
-            if [[ "${seen_copy}" == true ]] && (( positional < 2 )); then
-                if (( positional == 0 )); then source_path="$1"; else dest_path="$1"; fi
-                positional=$(( positional + 1 ))
-            fi
-            shift
-            ;;
-    esac
-done
-
-[[ "${seen_copy}" == true ]] || exit 1
-
-# A relative destination means the argument parsing above mistook a flag
-# VALUE for a path — which would silently copy a backup into whatever
-# directory the test runner happened to be in. Fail loudly instead.
-[[ "${dest_path}" == /* ]] || {
-    printf 'ERROR: stub refuses a relative destination: %s\n' "${dest_path}" >&2
-    exit 1
-}
-
-local_source="${RGTEST_REMOTE_ROOT}/${source_path}"
-
-if [[ ! -d "${local_source}" ]]; then
-    printf 'ERROR: remote directory not found: %s\n' "${source_path}" >&2
-    exit 1
-fi
-
-cp -a "${local_source}/." "${dest_path}/"
-BASH);
-}
-
 // =============================================================================
 // Selection contract: exact backup only, never "latest"
 // =============================================================================
@@ -333,7 +275,7 @@ it('downloads exactly one backup from the fixed remote and bucket for the regist
     $scratch = restoreScratchDir();
 
     try {
-        fetchBackupRcloneStub($scratch);
+        offsiteRcloneStub($scratch);
 
         // Two remote backups; only the named one may be downloaded.
         buildBackupFixture($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
@@ -365,7 +307,7 @@ it('fails closed when the offsite backup is incomplete', function () {
     $scratch = restoreScratchDir();
 
     try {
-        fetchBackupRcloneStub($scratch);
+        offsiteRcloneStub($scratch);
 
         $remote = $scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity';
         $dir = buildBackupFixture($remote, '20260115-120000');
@@ -389,7 +331,7 @@ it('never logs a credential, an rclone config body or an environment value', fun
     $scratch = restoreScratchDir();
 
     try {
-        fetchBackupRcloneStub($scratch);
+        offsiteRcloneStub($scratch);
 
         buildBackupFixture($scratch.'/remote/rateguru-b2:rateguru-database-backups/rateguru/parity', '20260115-120000');
 
@@ -537,7 +479,7 @@ it('rejects a planned target before creating a workspace, reading a backup root 
     $scratch = restoreScratchDir();
 
     try {
-        fetchBackupRcloneStub($scratch);
+        offsiteRcloneStub($scratch);
         buildBackupFixture($scratch.'/backups/planned', '20260115-120000');
 
         $result = fetchBackupRun($scratch, ['--target', 'planned-target', '--source', 'offsite', '--backup', '20260115-120000'], [
