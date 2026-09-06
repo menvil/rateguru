@@ -284,30 +284,35 @@ it('leaves the accepted backup subsystem and its manifest schema untouched', fun
 })->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
-it('gives backup exactly one fail-closed guard, and no other restore-awareness', function () {
+it('gives backup exactly one fail-closed guard, and no other data-operation awareness', function () {
     // The end state, asserted without a diff so it holds on every branch. A
-    // target held after a restore has data belonging to a different commit than
-    // current/release.json names, and a backup taken there would label it with
-    // that commit — so backup refuses before creating anything, and that is the
-    // ONLY thing it knows about restores.
+    // target held after a restore, or being rebuilt by a host recovery, has
+    // data belonging to a different commit than current/release.json names,
+    // and a backup taken there would label it with that commit — so backup
+    // refuses before creating anything, through ONE call to the combined gate,
+    // and that is the only thing it knows about either operation.
     $backup = committedFile('infrastructure/scripts/backup');
 
-    expect(substr_count($backup, 'assert_no_restore_hold'))->toBe(1);
+    expect(substr_count($backup, 'assert_no_operation_hold'))->toBe(1);
 
     // A refusal, not a step: it runs before perform_backup.
-    expect(mb_strpos($backup, 'assert_no_restore_hold'))
+    expect(mb_strpos($backup, 'assert_no_operation_hold'))
         ->toBeLessThan(mb_strpos($backup, "\n    perform_backup\n"));
 
-    // And nothing else restore-shaped leaked in: backup does not read a
-    // workspace, drive a restore primitive or clear a guard.
+    // And nothing else data-operation-shaped leaked in: backup does not read a
+    // workspace, drive a primitive, or touch a guard.
     foreach ([
         'restore-target',
         'restore-database',
         'restore-storage',
         'fetch-backup',
+        'recover-host',
         'restore_guard_file',
+        'recovery_guard_file',
         'write_restore_guard',
         'clear_restore_guard',
+        'write_recovery_guard',
+        'clear_recovery_guard',
         'selected-backup',
     ] as $forbidden) {
         expect($backup)->not->toContain($forbidden);
@@ -316,22 +321,24 @@ it('gives backup exactly one fail-closed guard, and no other restore-awareness',
 
 it('changes backup by nothing more than that guard', function () {
     // The bounded-diff half, which only says anything when a branch actually
-    // touches the file. Once Restore Target Data merged, a later branch diffs clean here
-    // — and if one does touch backup, the guard line is the only addition it
-    // may carry.
+    // touches the file. A later branch diffs clean here — and if one does touch
+    // backup, the guard line is the only code it may carry, whichever name that
+    // one gate currently has.
     $diff = branchFileDiff('infrastructure/scripts/backup');
+
+    $guardCalls = [
+        'assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"',
+        'assert_no_operation_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"',
+    ];
 
     // Both halves are judged as code. The additions already were; the
     // removals were not, which made this guard fire on a comment being
     // reworded — a change that by definition cannot weaken backup.
-    expect(sourceCodeLines($diff['removed']))->toBe([]);
+    expect(sourceCodeLines($diff['removed']))->toBeIn([[], [$guardCalls[0]]]);
 
     $addedCode = sourceCodeLines($diff['added']);
 
-    expect($addedCode)->toBeIn([
-        [],
-        ['assert_no_restore_hold "${TARGET_ID}" "${RUN_ROOT}" "a backup"'],
-    ]);
+    expect($addedCode)->toBeIn([[], [$guardCalls[1]]]);
 })->skip(fn (): bool => branchBaseRevision() === null,
     'requires the PR base SHA or an origin/develop reference');
 
