@@ -1,0 +1,23 @@
+infrastructure/scripts/install-bootstrap-services
+  s_015e6e963c56c6::t_484a21c7cf80ee 2479-2498
+tests/Feature/Architecture/InstallBootstrapServicesTest.php
+  s_015e6e963c56c6::t_ca30fc7c26b544 2345-2422
+infrastructure/runbooks/repair-target.md
+  s_015e6e963c56c6::t_507afc173f3ced 159-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6f442cab2b26aa3b6c460cc67e7ed9b856515047",
+  "prompts": {},
+  "sessions": {
+    "s_015e6e963c56c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d7f5ab7-8830-4ed4-b056-647d1bdeaf21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ivan Moroz <menvil.menvil@gmail.com>"
+    }
+  }
+}
